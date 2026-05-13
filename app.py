@@ -591,6 +591,74 @@ div[class*="alert"], div[class*="Alert"] {
     color: #1DB954;
     margin-right: 6px;
 }
+
+/* ── ANTI-OVERLAP: Stacking context isolation ── */
+/* Prevents status icons / checkmarks from bleeding into adjacent content */
+[data-testid="stChatMessage"] {
+    isolation: isolate !important;
+    position: relative !important;
+    z-index: 1 !important;
+    overflow: hidden !important;
+}
+[data-testid="stMarkdownContainer"] {
+    position: relative !important;
+    z-index: 1 !important;
+    isolation: isolate !important;
+}
+[data-testid="stStatus"], .stStatus,
+[data-testid="stStatusWidget"] {
+    isolation: isolate !important;
+    position: relative !important;
+    z-index: 0 !important;
+    overflow: hidden !important;
+}
+
+/* ── Sidebar: kill ghost scrollbar + trailing empty space ── */
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+    overflow-y: hidden !important;
+    height: fit-content !important;
+    padding-bottom: 0 !important;
+}
+section[data-testid="stSidebar"] > div:first-child {
+    scrollbar-width: thin !important;
+    scrollbar-color: rgba(255,255,255,0.06) transparent !important;
+}
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar { width: 3px !important; }
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-track { background: transparent !important; }
+section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.06) !important;
+    border-radius: 2px !important;
+}
+
+/* ── RTL: exhaustive [data-testid="stMarkdownContainer"] targeting ── */
+[data-testid="stMarkdownContainer"],
+[data-testid="stMarkdownContainer"] p,
+[data-testid="stMarkdownContainer"] span,
+[data-testid="stMarkdownContainer"] div,
+[data-testid="stMarkdownContainer"] h1, [data-testid="stMarkdownContainer"] h2,
+[data-testid="stMarkdownContainer"] h3, [data-testid="stMarkdownContainer"] h4,
+[data-testid="stMarkdownContainer"] li,  [data-testid="stMarkdownContainer"] ul,
+[data-testid="stMarkdownContainer"] ol,  [data-testid="stMarkdownContainer"] td,
+[data-testid="stMarkdownContainer"] th,  [data-testid="stMarkdownContainer"] strong,
+[data-testid="stMarkdownContainer"] em,  [data-testid="stMarkdownContainer"] a {
+    direction: rtl !important;
+    text-align: right !important;
+}
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"],
+[data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] * {
+    direction: rtl !important;
+    text-align: right !important;
+}
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"],
+[data-testid="stExpander"] [data-testid="stMarkdownContainer"] * {
+    direction: rtl !important;
+    text-align: right !important;
+}
+[data-testid="stAlert"] p, [data-testid="stAlert"] span,
+[data-testid="stAlert"] div, [data-testid="stAlert"] * {
+    direction: rtl !important;
+    text-align: right !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -696,12 +764,10 @@ with st.sidebar:
         f'&nbsp;<span class="server-pill {"on" if _ok else "off"}">{"🟢 Online" if _ok else "⚪ Local"}</span></div>',
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="btn-logout">', unsafe_allow_html=True)
     if st.button("🚪 יציאה", key="logout_btn"):
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -715,7 +781,6 @@ with st.sidebar:
     risk       = risk_map[risk_label]
     duration   = st.slider("אופק (חודשים)", 1, 60, int(_prof.get("duration_months", 12)))
 
-    st.markdown('<div class="btn-save">', unsafe_allow_html=True)
     if st.button("💾 שמור", key="save_profile"):
         try:
             update_user_profile(st.session_state.user_id, float(budget), risk, int(duration))
@@ -723,7 +788,6 @@ with st.sidebar:
             st.success("✅ נשמר")
         except Exception as exc:
             st.error(f"שגיאה: {exc}")
-    st.markdown('</div>', unsafe_allow_html=True)
 
     st.divider()
 
@@ -799,11 +863,9 @@ with tab_chat:
                 <div class="loader-txt">מחפש בשווקים עבורך...</div>
             </div>""", unsafe_allow_html=True)
 
-            status = st.status("⟳ הסוכן חוקר...", expanded=False)
             try:
                 answer, tool_log = st.session_state.agent.run(user_input, profile)
                 loader_ph.empty()
-                status.update(label=f"✅ הושלם — {len(tool_log)} כלים", state="complete", expanded=False)
 
                 st.markdown('<div class="verified-badge">📈 Pro-Investor AI · יועץ מאומת</div>', unsafe_allow_html=True)
                 st.markdown(answer)
@@ -834,17 +896,19 @@ with tab_chat:
 
             except Exception as exc:
                 loader_ph.empty()
-                status.update(label="❌ שגיאה", state="error")
-                err = f"אני מצטער, נתקלתי בשגיאה טכנית: {exc}"
-                st.error(err)
+                _e = str(exc).lower()
+                if "429" in _e or "rate_limit" in _e or "rate limit" in _e or "too many" in _e:
+                    err = "מצטער, הגעתי למכסת הבקשות לדקה. אנא נסה שוב בעוד מספר שניות. ⏱️"
+                    st.warning(err)
+                else:
+                    err = f"אני מצטער, נתקלתי בשגיאה טכנית: {exc}"
+                    st.error(err)
                 st.session_state.chat_history.append({"role": "assistant", "content": err, "tool_log": []})
 
     if st.session_state.chat_history:
-        st.markdown('<div class="btn-clear">', unsafe_allow_html=True)
         if st.button("🗑️ נקה שיחה"):
             st.session_state.chat_history = []
             st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 2 — Market Analysis (Media Cards)
@@ -854,9 +918,7 @@ with tab_analyze:
     with col_in:
         tickers_raw = st.text_input("טיקרים (פסיק):", value="AAPL, MSFT, NVDA, SPY, BTC-USD", label_visibility="collapsed")
     with col_btn:
-        st.markdown('<div class="btn-ghost">', unsafe_allow_html=True)
         run_analysis = st.button("🔍 נתח", key="analyze_btn")
-        st.markdown('</div>', unsafe_allow_html=True)
 
     if run_analysis and tickers_raw:
         tickers = [t.strip().upper() for t in tickers_raw.split(",") if t.strip()]
@@ -943,9 +1005,7 @@ with tab_chart:
     with c2:
         period_lbl = st.selectbox("תקופה:", list(CHART_CONFIGS.keys()), index=0, label_visibility="collapsed")
     with c3:
-        st.markdown('<div class="btn-ghost">', unsafe_allow_html=True)
         show_chart = st.button("📊 הצג", key="chart_btn")
-        st.markdown('</div>', unsafe_allow_html=True)
 
     if show_chart:
         period, interval, interval_label = CHART_CONFIGS[period_lbl]
@@ -1070,10 +1130,8 @@ with tab_chart:
 # TAB 4 — Recommendation History
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
-    st.markdown('<div class="btn-ghost">', unsafe_allow_html=True)
     if st.button("🔄 רענן", key="refresh_history"):
         st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
 
     try:
         stats = get_stats()
@@ -1093,7 +1151,11 @@ with tab_history:
                     "טיקר":    r["ticker"],
                     "פסיקה":   VERDICT_HE.get(r["verdict"], r["verdict"]),
                     "מחיר":    f"${r['price']:.2f}" if r["price"] else "—",
-                    "ציון":    f"{r['score']:.4f}" if r["score"] else "—",
+                    "ציון": (
+                        "גבוה ✅" if (r["score"] or 0) >= 0.28
+                        else "בינוני 🟡" if (r["score"] or 0) >= 0.10
+                        else "נמוך 🔴"
+                    ) if r["score"] is not None else "—",
                     "תשואה":   f"{r['return']*100:.1f}%" if r["return"] else "—",
                 } for r in recs]),
                 use_container_width=True, hide_index=True,
