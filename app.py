@@ -2,12 +2,21 @@
 Pro-Investor — Streamlit UI
 Spotify/Netflix dark aesthetic · zero-scroll layout · intraday charts.
 Code/comments in English; all UI text and AI responses in Hebrew.
+
+Execution order (critical for login gate):
+  1. Page config
+  2. Session-state defaults          ← must come before ANY rendering
+  3. GROQ key + heavy imports
+  4. LOGIN GATEKEEPER                ← injects login CSS, renders form, st.stop()
+  5. Dashboard CSS injection         ← only reached when logged_in is True
+  6. Sidebar → Tabs → Chat / Analyze / Chart / History
 """
 
 import json
 import os
 import socket
 import sys
+
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -45,13 +54,26 @@ class BackendClient:
         return self._send({"action": "score", "ticker": ticker, "risk": risk, "months": months})
 
 
-# ── Page config ────────────────────────────────────────────────────────────────
+# ── Page config (must be the FIRST Streamlit call) ────────────────────────────
 st.set_page_config(
     page_title="Pro-Investor",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# ── Session state defaults (BEFORE any rendering or CSS) ──────────────────────
+for _k, _default in {
+    "logged_in":    False,
+    "user_id":      None,
+    "user_name":    "",
+    "user_profile": {},
+    "agent":        None,
+    "chat_history": [],
+    "backend":      BackendClient(),
+}.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _default
 
 # ── GROQ key ───────────────────────────────────────────────────────────────────
 _key = os.environ.get("GROQ_API_KEY") or st.secrets.get("GROQ_API_KEY", "")
@@ -61,6 +83,7 @@ else:
     st.error("### ⚠️ מפתח Groq API חסר — הוסף ל-.streamlit/secrets.toml")
     st.stop()
 
+# ── Heavy imports (after GROQ key check so failures are explicit) ──────────────
 from agent import InvestmentAgent
 from data_engine import get_historical_data, get_multiple_prices
 from scoring_engine import score_ticker
@@ -74,8 +97,265 @@ try:
 except Exception:
     pass
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# CSS — Zero-scroll · Spotify/Netflix dark · Compact command-center layout
+# LOGIN GATEKEEPER
+# Injected BEFORE the dashboard CSS so the flex-chain never clips the form.
+# ══════════════════════════════════════════════════════════════════════════════
+_LOGIN_CSS = """
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Heebo:wght@300;400;500;600;700;800;900&display=swap');
+
+*, *::before, *::after {
+    font-family: 'Heebo', 'Arial', sans-serif !important;
+    box-sizing: border-box;
+}
+
+/* Login page: dark bg, natural scroll, no flex constraints */
+html, body, .stApp {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+    direction: rtl !important;
+    min-height: 100vh !important;
+}
+
+/* Radial green glow at top */
+.stApp::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse 80% 38% at 50% 0%,
+        rgba(29,185,84,0.10) 0%, transparent 62%);
+    pointer-events: none;
+    z-index: 0;
+}
+
+/* Hide Streamlit chrome */
+[data-testid="stHeader"], [data-testid="stDecoration"],
+.stDeployButton, #MainMenu, footer, [data-testid="stToolbar"],
+[data-testid="stSidebar"], [data-testid="stSidebarResizeHandle"] {
+    display: none !important;
+}
+
+/* Block-container: centered, max-width 520px */
+.block-container {
+    max-width: 100% !important;
+    padding-top: 0 !important;
+    padding-bottom: 2rem !important;
+    padding-left: 1rem !important;
+    padding-right: 1rem !important;
+    overflow: visible !important;
+}
+section.main, [data-testid="stMain"] {
+    padding-top: 0 !important;
+    overflow: visible !important;
+}
+
+/* RTL text */
+body, p, span, div, li, h1, h2, h3, h4,
+label, button, input, textarea, select,
+[data-testid="stWidgetLabel"] {
+    direction: rtl !important;
+    text-align: right !important;
+}
+
+/* Login hero */
+.login-hero {
+    text-align: center !important;
+    padding: 44px 0 32px !important;
+    direction: rtl !important;
+    position: relative; z-index: 1;
+}
+.login-hero h1 {
+    color: #1DB954 !important;
+    font-size: 2.6rem !important;
+    font-weight: 900 !important;
+    letter-spacing: -1.2px !important;
+    margin: 0 !important;
+}
+.login-hero p {
+    color: rgba(255,255,255,0.32) !important;
+    font-size: 0.92rem !important;
+    margin-top: 8px !important;
+}
+.login-foot {
+    text-align: center !important;
+    color: rgba(255,255,255,0.18) !important;
+    font-size: 0.68rem !important;
+    margin-top: 30px !important;
+    direction: rtl !important;
+}
+
+/* Glass form card */
+[data-testid="stForm"] {
+    background: rgba(255,255,255,0.04) !important;
+    border: 1px solid rgba(255,255,255,0.09) !important;
+    border-radius: 14px !important;
+    padding: 22px 18px !important;
+    backdrop-filter: blur(12px) !important;
+    -webkit-backdrop-filter: blur(12px) !important;
+    position: relative; z-index: 1;
+}
+
+/* Inputs */
+.stTextInput input, .stNumberInput input, .stPasswordInput input {
+    background: #141414 !important;
+    color: #ffffff !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
+    border-radius: 8px !important;
+    direction: rtl !important;
+    font-size: 0.92rem !important;
+    padding: 9px 12px !important;
+    transition: border-color 0.15s !important;
+}
+.stTextInput input:focus, .stPasswordInput input:focus {
+    border-color: #1DB954 !important;
+    box-shadow: 0 0 0 2px rgba(29,185,84,0.14) !important;
+    background: #1a1a1a !important;
+}
+
+/* Selectbox */
+.stSelectbox > div > div {
+    background: #141414 !important;
+    border: 1px solid rgba(255,255,255,0.10) !important;
+    border-radius: 8px !important;
+    color: #ffffff !important;
+    font-size: 0.9rem !important;
+}
+
+/* Form submit + regular buttons */
+[data-testid="stFormSubmitButton"] > button,
+.stButton > button {
+    background: #1DB954 !important;
+    color: #000000 !important;
+    border: none !important;
+    border-radius: 500px !important;
+    font-weight: 700 !important;
+    font-size: 0.9rem !important;
+    padding: 10px 28px !important;
+    width: 100% !important;
+    transition: all 0.15s ease !important;
+    letter-spacing: 0.2px !important;
+}
+[data-testid="stFormSubmitButton"] > button:hover,
+.stButton > button:hover {
+    background: #1ed760 !important;
+    box-shadow: 0 0 18px rgba(29,185,84,0.38) !important;
+}
+
+/* Alerts RTL */
+.stAlert, [data-testid="stAlert"] {
+    direction: rtl !important;
+    text-align: right !important;
+    border-radius: 10px !important;
+    border: 1px solid rgba(255,255,255,0.09) !important;
+}
+.stAlert > div, .stAlert p, .stAlert span { direction: rtl !important; }
+
+/* Tabs (login / signup tabs) */
+.stTabs [data-baseweb="tab-list"] {
+    background: transparent !important;
+    border-bottom: 1px solid rgba(255,255,255,0.07) !important;
+    gap: 0 !important;
+    padding: 0 !important;
+    margin-bottom: 0.6rem !important;
+}
+.stTabs [data-baseweb="tab"] {
+    color: #727272 !important;
+    font-weight: 600 !important;
+    font-size: 0.85rem !important;
+    padding: 9px 20px !important;
+    background: transparent !important;
+    border-bottom: 2px solid transparent !important;
+    border-radius: 0 !important;
+}
+.stTabs [aria-selected="true"] {
+    color: #1DB954 !important;
+    border-bottom: 2px solid #1DB954 !important;
+}
+
+/* Slider */
+[data-testid="stSlider"] [data-baseweb="slider"] { direction: ltr !important; }
+[data-testid="stSlider"] [data-testid="stThumbValue"] { color: #1DB954 !important; }
+
+/* Progress */
+.stProgress > div > div > div { background: #1DB954 !important; }
+</style>
+"""
+
+
+def _render_login_screen() -> None:
+    st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
+    st.markdown("""
+    <div class="login-hero">
+        <div style="font-size:2.8rem; margin-bottom:10px;">📈</div>
+        <h1>Pro-Investor</h1>
+        <p>יועץ ההשקעות החכם שלך — מחפש, מנתח ומדרג בזמן אמת</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _, col, _ = st.columns([1, 1.5, 1])
+    with col:
+        tab_login, tab_signup = st.tabs(["🔐 התחברות", "📝 הרשמה"])
+
+        # ── Login ──────────────────────────────────────────────────────────────
+        with tab_login:
+            with st.form("login_form"):
+                name      = st.text_input("👤 שם משתמש")
+                password  = st.text_input("🔑 סיסמה", type="password")
+                submitted = st.form_submit_button("התחבר →")
+            if submitted:
+                if not name or not password:
+                    st.error("יש למלא שם משתמש וסיסמה")
+                else:
+                    profile = authenticate_user(name.strip(), password)
+                    if profile:
+                        st.session_state.logged_in    = True
+                        st.session_state.user_id      = profile["id"]
+                        st.session_state.user_name    = profile["name"]
+                        st.session_state.user_profile = profile
+                        st.session_state.agent        = InvestmentAgent()
+                        st.rerun()
+                    else:
+                        st.error("שם משתמש או סיסמה שגויים")
+
+        # ── Signup ─────────────────────────────────────────────────────────────
+        with tab_signup:
+            with st.form("signup_form"):
+                nn  = st.text_input("👤 שם משתמש חדש")
+                np  = st.text_input("🔑 סיסמה", type="password")
+                np2 = st.text_input("🔑 אימות סיסמה", type="password")
+                nb  = st.number_input("💰 תקציב ($)", min_value=100, max_value=10_000_000, value=10_000, step=500)
+                ro  = {"נמוך 🟢": "low", "בינוני 🟡": "medium", "גבוה 🔴": "high"}
+                rl  = st.selectbox("⚖️ רמת סיכון", list(ro.keys()), index=1)
+                nd  = st.slider("📅 אופק השקעה (חודשים)", 1, 60, 12)
+                rs  = st.form_submit_button("הרשמה →")
+            if rs:
+                if not nn or not np:
+                    st.error("שם משתמש וסיסמה הם שדות חובה")
+                elif np != np2:
+                    st.error("הסיסמאות אינן תואמות")
+                else:
+                    try:
+                        create_user(nn.strip(), np, float(nb), ro[rl], int(nd))
+                        st.success(f"✅ נרשמת בהצלחה, {nn.strip()}! עבור ללשונית התחברות")
+                    except ValueError as exc:
+                        st.error(str(exc))
+
+    st.markdown(
+        '<div class="login-foot">⚠️ המידע לצורכי מידע בלבד ואינו ייעוץ פיננסי מוסמך</div>',
+        unsafe_allow_html=True,
+    )
+
+
+# ── GATEKEEPER: if not authenticated, show login and halt execution ─────────
+if not st.session_state.logged_in:
+    _render_login_screen()
+    st.stop()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DASHBOARD CSS — only injected for authenticated users
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
@@ -252,7 +532,7 @@ section[data-testid="stSidebar"] [data-testid="stSlider"] {
 .stMarkdown p      { margin-bottom: 0.25rem !important; }
 hr                 { margin: 0.4rem 0 !important; border-color: rgba(255,255,255,0.06) !important; }
 
-/* ── Buttons (scoped) ── */
+/* ── Buttons ── */
 .stButton > button {
     background: #1DB954 !important;
     color: #000000 !important;
@@ -269,61 +549,6 @@ hr                 { margin: 0.4rem 0 !important; border-color: rgba(255,255,255
     background: #1ed760 !important;
     transform: scale(1.03) !important;
     box-shadow: 0 0 20px rgba(29,185,84,0.4) !important;
-}
-.btn-logout button {
-    background: transparent !important;
-    color: #535353 !important;
-    border: 1px solid rgba(255,255,255,0.1) !important;
-    font-size: 0.72rem !important;
-    padding: 4px 12px !important;
-    border-radius: 500px !important;
-}
-.btn-logout button:hover {
-    background: rgba(229,9,20,0.1) !important;
-    color: #E50914 !important;
-    border-color: rgba(229,9,20,0.3) !important;
-    transform: none !important;
-    box-shadow: none !important;
-}
-.btn-save button {
-    background: rgba(29,185,84,0.1) !important;
-    color: #1DB954 !important;
-    border: 1px solid rgba(29,185,84,0.25) !important;
-    border-radius: 8px !important;
-    font-size: 0.78rem !important;
-    padding: 5px 14px !important;
-}
-.btn-save button:hover {
-    background: rgba(29,185,84,0.2) !important;
-    transform: none !important;
-    box-shadow: none !important;
-}
-.btn-ghost button {
-    background: transparent !important;
-    color: #1DB954 !important;
-    border: 1px solid rgba(29,185,84,0.4) !important;
-    border-radius: 8px !important;
-    padding: 8px 20px !important;
-}
-.btn-ghost button:hover {
-    background: rgba(29,185,84,0.08) !important;
-    box-shadow: none !important;
-    transform: none !important;
-}
-.btn-clear button {
-    background: transparent !important;
-    color: #535353 !important;
-    border: 1px solid rgba(255,255,255,0.08) !important;
-    border-radius: 8px !important;
-    font-size: 0.72rem !important;
-    padding: 5px 12px !important;
-}
-.btn-clear button:hover {
-    color: #E50914 !important;
-    border-color: rgba(229,9,20,0.25) !important;
-    background: rgba(229,9,20,0.06) !important;
-    transform: none !important;
-    box-shadow: none !important;
 }
 
 /* ── Inputs ── */
@@ -371,6 +596,10 @@ div[class*="alert"], div[class*="Alert"] {
     direction: rtl !important;
     padding: 10px 16px !important;
     border: 1px solid transparent !important;
+    isolation: isolate !important;
+    position: relative !important;
+    z-index: 1 !important;
+    overflow: hidden !important;
 }
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
     background: rgba(255,255,255,0.04) !important;
@@ -406,7 +635,7 @@ div[class*="alert"], div[class*="Alert"] {
 [data-testid="stMetricLabel"] { color: #727272 !important; font-size: 0.75rem !important; }
 [data-testid="stMetricDelta"]  { font-size: 0.72rem !important; }
 
-/* ── Forms (login glass card) ── */
+/* ── Forms ── */
 [data-testid="stForm"] {
     background: rgba(255,255,255,0.04) !important;
     border: 1px solid rgba(255,255,255,0.09) !important;
@@ -468,11 +697,12 @@ div[class*="alert"], div[class*="Alert"] {
     padding: 0 0 6px;
     border-bottom: 1px solid rgba(255,255,255,0.06);
     margin-bottom: 6px;
+    flex-shrink: 0;
 }
 .cmd-title { font-size: 1.35rem; font-weight: 900; color: #ffffff; letter-spacing: -0.3px; }
 .cmd-sub   { font-size: 0.7rem; color: #3d3d3d; font-weight: 500; }
 
-/* ── Compact live ticker grid (replaces st.metric in sidebar) ── */
+/* ── Compact live ticker grid (sidebar) ── */
 .ticker-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -634,12 +864,6 @@ div[class*="alert"], div[class*="Alert"] {
 }
 .loader-txt { color: #1DB954; font-size: 0.82rem; font-weight: 600; animation: pulse-txt 1.3s ease-in-out infinite; direction: rtl; text-align: right; }
 
-/* ── Login page ── */
-.login-hero { text-align: center; padding: 50px 0 38px; direction: rtl; }
-.login-hero h1 { color: #1DB954 !important; font-size: 2.8rem !important; font-weight: 900 !important; letter-spacing: -1.2px !important; margin: 0 !important; }
-.login-hero p  { color: rgba(255,255,255,0.32) !important; font-size: 0.95rem !important; margin-top: 8px !important; }
-.login-foot    { text-align: center; color: rgba(255,255,255,0.18); font-size: 0.68rem; margin-top: 32px; direction: rtl; }
-
 /* ── Chart interval badge ── */
 .interval-badge {
     display: inline-block;
@@ -654,13 +878,6 @@ div[class*="alert"], div[class*="Alert"] {
 }
 
 /* ── ANTI-OVERLAP: Stacking context isolation ── */
-/* Prevents status icons / checkmarks from bleeding into adjacent content */
-[data-testid="stChatMessage"] {
-    isolation: isolate !important;
-    position: relative !important;
-    z-index: 1 !important;
-    overflow: hidden !important;
-}
 [data-testid="stMarkdownContainer"] {
     position: relative !important;
     z-index: 1 !important;
@@ -767,91 +984,7 @@ section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session state defaults ─────────────────────────────────────────────────────
-for _k, _default in {
-    "logged_in":    False,
-    "user_id":      None,
-    "user_name":    "",
-    "user_profile": {},
-    "agent":        None,
-    "chat_history": [],
-    "backend":      BackendClient(),
-}.items():
-    if _k not in st.session_state:
-        st.session_state[_k] = _default
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# LOGIN / SIGNUP SCREEN
-# ══════════════════════════════════════════════════════════════════════════════
-def _render_login_screen() -> None:
-    st.markdown("""
-    <style>
-    section.main > div:first-child {
-        background: radial-gradient(ellipse 90% 50% at 50% -5%,
-            rgba(29,185,84,0.09) 0%, transparent 60%) !important;
-    }
-    </style>
-    <div class="login-hero">
-        <div style="font-size:3rem; margin-bottom:10px;">📈</div>
-        <h1>Pro-Investor</h1>
-        <p>יועץ ההשקעות החכם שלך — מחפש, מנתח ומדרג בזמן אמת</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-    _, col, _ = st.columns([1, 1.6, 1])
-    with col:
-        tab_login, tab_signup = st.tabs(["🔐 התחברות", "📝 הרשמה"])
-
-        with tab_login:
-            with st.form("login_form"):
-                name      = st.text_input("👤 שם משתמש")
-                password  = st.text_input("🔑 סיסמה", type="password")
-                submitted = st.form_submit_button("התחבר →")
-            if submitted:
-                if not name or not password:
-                    st.error("יש למלא שם משתמש וסיסמה")
-                else:
-                    profile = authenticate_user(name, password)
-                    if profile:
-                        st.session_state.logged_in    = True
-                        st.session_state.user_id      = profile["id"]
-                        st.session_state.user_name    = profile["name"]
-                        st.session_state.user_profile = profile
-                        st.session_state.agent        = InvestmentAgent()
-                        st.rerun()
-                    else:
-                        st.error("שם משתמש או סיסמה שגויים")
-
-        with tab_signup:
-            with st.form("signup_form"):
-                nn   = st.text_input("👤 שם משתמש")
-                np   = st.text_input("🔑 סיסמה", type="password")
-                np2  = st.text_input("🔑 אימות", type="password")
-                nb   = st.number_input("💰 תקציב ($)", min_value=100, max_value=10_000_000, value=10_000, step=500)
-                ro   = {"נמוך 🟢": "low", "בינוני 🟡": "medium", "גבוה 🔴": "high"}
-                rl   = st.selectbox("⚖️ סיכון", list(ro.keys()), index=1)
-                nd   = st.slider("📅 אופק (חודשים)", 1, 60, 12)
-                rs   = st.form_submit_button("הרשמה →")
-            if rs:
-                if not nn or not np:
-                    st.error("שם משתמש וסיסמה הם שדות חובה")
-                elif np != np2:
-                    st.error("הסיסמאות אינן תואמות")
-                else:
-                    try:
-                        create_user(nn, np, float(nb), ro[rl], int(nd))
-                        st.success(f"✅ נרשמת בהצלחה, {nn}! עבור להתחברות")
-                    except ValueError as exc:
-                        st.error(str(exc))
-
-    st.markdown('<div class="login-foot">⚠️ המידע לצורכי מידע בלבד ואינו ייעוץ פיננסי מוסמך</div>', unsafe_allow_html=True)
-
-
-if not st.session_state.logged_in:
-    _render_login_screen()
-    st.stop()
-
+# ── Agent init (only for authenticated users) ──────────────────────────────────
 if st.session_state.agent is None:
     st.session_state.agent = InvestmentAgent()
 
@@ -859,10 +992,8 @@ if st.session_state.agent is None:
 # SIDEBAR — compact command-center style
 # ══════════════════════════════════════════════════════════════════════════════
 with st.sidebar:
-    # Brand
     st.markdown('<div class="sidebar-brand">📈 Pro-Investor</div>', unsafe_allow_html=True)
 
-    # User + server status
     _ok = st.session_state.backend.ping()
     st.markdown(
         f'<div class="sidebar-user">{st.session_state.user_name}'
@@ -876,10 +1007,10 @@ with st.sidebar:
 
     st.divider()
 
-    # Investor profile
     st.markdown('<div class="sidebar-section">💼 פרופיל</div>', unsafe_allow_html=True)
     _prof   = st.session_state.user_profile
-    budget  = st.number_input("תקציב ($)", min_value=100, max_value=10_000_000, value=int(_prof.get("budget", 10_000)), step=500, format="%d")
+    budget  = st.number_input("תקציב ($)", min_value=100, max_value=10_000_000,
+                               value=int(_prof.get("budget", 10_000)), step=500, format="%d")
     risk_map   = {"נמוך 🟢": "low", "בינוני 🟡": "medium", "גבוה 🔴": "high"}
     _ri        = {"low": 0, "medium": 1, "high": 2}.get(_prof.get("risk_tolerance", "medium"), 1)
     risk_label = st.selectbox("סיכון", list(risk_map.keys()), index=_ri)
@@ -889,14 +1020,15 @@ with st.sidebar:
     if st.button("💾 שמור", key="save_profile"):
         try:
             update_user_profile(st.session_state.user_id, float(budget), risk, int(duration))
-            st.session_state.user_profile.update({"budget": float(budget), "risk_tolerance": risk, "duration_months": int(duration)})
+            st.session_state.user_profile.update({
+                "budget": float(budget), "risk_tolerance": risk, "duration_months": int(duration)
+            })
             st.success("✅ נשמר")
         except Exception as exc:
             st.error(f"שגיאה: {exc}")
 
     st.divider()
 
-    # Compact live ticker grid (2-column HTML — much smaller than st.metric)
     st.markdown('<div class="sidebar-section">📡 שוק · עכשיו</div>', unsafe_allow_html=True)
     try:
         prices = get_multiple_prices(["SPY", "AAPL", "NVDA", "BTC-USD"])
@@ -940,7 +1072,8 @@ with tab_chat:
                 st.markdown(msg["content"])
         else:
             with st.chat_message("assistant", avatar="📈"):
-                st.markdown('<div class="verified-badge">📈 Pro-Investor AI · יועץ מאומת</div>', unsafe_allow_html=True)
+                st.markdown('<div class="verified-badge">📈 Pro-Investor AI · יועץ מאומת</div>',
+                            unsafe_allow_html=True)
                 st.markdown(msg["content"])
                 log = msg.get("tool_log", [])
                 if log:
@@ -972,7 +1105,8 @@ with tab_chat:
                 answer, tool_log = st.session_state.agent.run(user_input, profile)
                 loader_ph.empty()
 
-                st.markdown('<div class="verified-badge">📈 Pro-Investor AI · יועץ מאומת</div>', unsafe_allow_html=True)
+                st.markdown('<div class="verified-badge">📈 Pro-Investor AI · יועץ מאומת</div>',
+                            unsafe_allow_html=True)
                 st.markdown(answer)
 
                 if tool_log:
@@ -1021,7 +1155,8 @@ with tab_chat:
 with tab_analyze:
     col_in, col_btn = st.columns([4, 1])
     with col_in:
-        tickers_raw = st.text_input("טיקרים (פסיק):", value="AAPL, MSFT, NVDA, SPY, BTC-USD", label_visibility="collapsed")
+        tickers_raw = st.text_input("טיקרים (פסיק):", value="AAPL, MSFT, NVDA, SPY, BTC-USD",
+                                    label_visibility="collapsed")
     with col_btn:
         run_analysis = st.button("🔍 נתח", key="analyze_btn")
 
@@ -1045,7 +1180,6 @@ with tab_analyze:
             def verdict(s):
                 return ("buy","✅ קנייה") if s >= 0.28 else ("avoid","❌ הימנע") if s < 0.05 else ("wait","⚠️ המתן")
 
-            # Champion card
             best = results[0]
             bvc, bvt = verdict(best["investment_score"])
             st.markdown(f"""
@@ -1059,7 +1193,6 @@ with tab_analyze:
                 </div>
             </div>""", unsafe_allow_html=True)
 
-            # Card grid
             grid = '<div class="cards-grid">'
             for rank, r in enumerate(results):
                 ret    = r["expected_return"] * 100
@@ -1094,7 +1227,6 @@ with tab_analyze:
 # TAB 3 — High-Resolution Intraday Charts
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_chart:
-    # Period → (yfinance period, interval, display label)
     CHART_CONFIGS = {
         "יום  · 5 דק'":   ("1d",  "5m",  "5 דקות"),
         "שבוע · 15 דק'":  ("5d",  "15m", "15 דקות"),
@@ -1114,7 +1246,6 @@ with tab_chart:
 
     if show_chart:
         period, interval, interval_label = CHART_CONFIGS[period_lbl]
-
         with st.spinner("טוען נתונים..."):
             try:
                 data = get_historical_data(chart_sym.upper(), period=period, interval=interval)
@@ -1123,8 +1254,6 @@ with tab_chart:
                 x_fmt    = "%H:%M" if intraday else "%d/%m"
 
                 fig = go.Figure()
-
-                # Candlestick trace
                 fig.add_trace(go.Candlestick(
                     x=data.index,
                     open=data["Open"], high=data["High"],
@@ -1135,16 +1264,14 @@ with tab_chart:
                     hovertext=data.index.strftime("%H:%M %d/%m" if intraday else "%d/%m/%y"),
                 ))
 
-                # MA overlay — 20-period moving average
                 ma = data["Close"].rolling(20).mean()
                 fig.add_trace(go.Scatter(
                     x=data.index, y=ma,
-                    name=f"ממוצע נע 20",
+                    name="ממוצע נע 20",
                     line=dict(color="rgba(251,191,36,0.8)", width=1.2, dash="dot"),
                     hovertemplate="%{y:$.2f}<extra>MA20</extra>",
                 ))
 
-                # Volume bars at bottom (secondary y-axis)
                 fig.add_trace(go.Bar(
                     x=data.index, y=data["Volume"],
                     name="נפח",
@@ -1158,11 +1285,11 @@ with tab_chart:
                     hovertemplate="%{y:,.0f}<extra>נפח</extra>",
                 ))
 
-                cur    = float(data["Close"].iloc[-1])
-                beg    = float(data["Close"].iloc[0])
-                pct    = (cur - beg) / beg * 100
-                hi     = float(data["High"].max())
-                lo     = float(data["Low"].min())
+                cur = float(data["Close"].iloc[-1])
+                beg = float(data["Close"].iloc[0])
+                pct = (cur - beg) / beg * 100
+                hi  = float(data["High"].max())
+                lo  = float(data["Low"].min())
 
                 fig.update_layout(
                     title=dict(
@@ -1213,14 +1340,12 @@ with tab_chart:
                 )
                 st.plotly_chart(fig, use_container_width=True)
 
-                # Compact 4-metric row below chart
                 m1, m2, m3, m4 = st.columns(4)
                 m1.metric("מחיר נוכחי",  f"${cur:,.2f}")
                 m2.metric("שינוי תקופה", f"{pct:+.2f}%", delta=f"{pct:+.2f}%")
                 m3.metric("שיא תקופה",   f"${hi:,.2f}")
                 m4.metric("שפל תקופה",   f"${lo:,.2f}")
 
-                # Interval info badge
                 st.markdown(
                     f'<span class="interval-badge">נר: {interval_label}</span>'
                     f'<span style="font-size:0.7rem; color:#3d3d3d;">'
@@ -1252,16 +1377,16 @@ with tab_history:
             VERDICT_HE = {"BUY": "✅ קנייה", "WAIT": "⚠️ המתן", "AVOID": "❌ הימנע"}
             st.dataframe(
                 pd.DataFrame([{
-                    "תאריך":   r["date"],
-                    "טיקר":    r["ticker"],
-                    "פסיקה":   VERDICT_HE.get(r["verdict"], r["verdict"]),
-                    "מחיר":    f"${r['price']:.2f}" if r["price"] else "—",
+                    "תאריך":  r["date"],
+                    "טיקר":   r["ticker"],
+                    "פסיקה":  VERDICT_HE.get(r["verdict"], r["verdict"]),
+                    "מחיר":   f"${r['price']:.2f}" if r["price"] else "—",
                     "ציון": (
                         "גבוה ✅" if (r["score"] or 0) >= 0.28
                         else "בינוני 🟡" if (r["score"] or 0) >= 0.10
                         else "נמוך 🔴"
                     ) if r["score"] is not None else "—",
-                    "תשואה":   f"{r['return']*100:.1f}%" if r["return"] else "—",
+                    "תשואה":  f"{r['return']*100:.1f}%" if r["return"] else "—",
                 } for r in recs]),
                 use_container_width=True, hide_index=True,
             )
