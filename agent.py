@@ -91,58 +91,215 @@ def _parse_ticker(raw: dict) -> str:
     return str(raw.get("ticker_symbol", "")).strip().upper()
 
 
+# ── Hebrew ticker map & intent classification ──────────────────────────────────
+
+HEBREW_TICKER_MAP: dict[str, str] = {
+    # US Tech
+    "אפל": "AAPL", "apple": "AAPL",
+    "גוגל": "GOOGL", "אלפבית": "GOOGL", "alphabet": "GOOGL",
+    "אמזון": "AMZN", "amazon": "AMZN",
+    "מטא": "META", "פייסבוק": "META", "facebook": "META",
+    "נבידיה": "NVDA", "אנבידיה": "NVDA", "nvidia": "NVDA", "נבידייה": "NVDA",
+    "טסלה": "TSLA", "תיסלה": "TSLA", "tesla": "TSLA",
+    "מיקרוסופט": "MSFT", "מייקרוסופט": "MSFT", "microsoft": "MSFT",
+    "אינטל": "INTC", "intel": "INTC",
+    "נטפליקס": "NFLX", "netflix": "NFLX",
+    "ספוטיפיי": "SPOT", "spotify": "SPOT",
+    "אובר": "UBER", "uber": "UBER",
+    "פייפאל": "PYPL", "paypal": "PYPL",
+    "אדובי": "ADBE", "adobe": "ADBE",
+    "סיילספורס": "CRM", "salesforce": "CRM",
+    "קוואלקום": "QCOM", "qualcomm": "QCOM",
+    "AMD": "AMD", "אמדי": "AMD",
+    # Indices
+    "נסדאק": "^IXIC", "נסדק": "^IXIC", "nasdaq": "^IXIC",
+    "ספ500": "^GSPC", "sp500": "^GSPC", "s&p": "^GSPC", "s&p500": "^GSPC",
+    "דאו": "^DJI", "דאו ג'ונס": "^DJI", "dow": "^DJI",
+    "ראסל": "^RUT", "russell": "^RUT",
+    # ETFs
+    "spy": "SPY", "qqq": "QQQ", "vix": "^VIX",
+    # Crypto
+    "ביטקוין": "BTC-USD", "bitcoin": "BTC-USD", "btc": "BTC-USD",
+    "איתריום": "ETH-USD", "את'ריום": "ETH-USD", "ethereum": "ETH-USD", "eth": "ETH-USD",
+    "סולנה": "SOL-USD", "solana": "SOL-USD",
+    "ריפל": "XRP-USD", "ripple": "XRP-USD",
+    # Commodities
+    "זהב": "GC=F", "gold": "GC=F",
+    "נפט": "CL=F", "oil": "CL=F", "crude": "CL=F",
+    "כסף": "SI=F", "silver": "SI=F",
+    # Finance
+    "ג'יי פי מורגן": "JPM", "jp morgan": "JPM", "jpmorgan": "JPM",
+    "בנק אוף אמריקה": "BAC", "bank of america": "BAC",
+    "גולדמן": "GS", "גולדמן זאקס": "GS", "goldman": "GS",
+    "ברקשייר": "BRK-B", "ברקשייר הת'אווי": "BRK-B",
+    # Consumer
+    "קוקה קולה": "KO", "קוקה": "KO", "coca cola": "KO",
+    "וולמארט": "WMT", "walmart": "WMT",
+    "דיסני": "DIS", "disney": "DIS",
+    # Healthcare
+    "פייזר": "PFE", "pfizer": "PFE",
+    "ג'ונסון": "JNJ", "johnson": "JNJ",
+    # Energy
+    "אקסון": "XOM", "exxon": "XOM",
+    "שברון": "CVX", "chevron": "CVX",
+    # Israeli
+    "לאומי": "LUMI.TA", "בנק לאומי": "LUMI.TA",
+    "פועלים": "POLI.TA", "בנק פועלים": "POLI.TA",
+    "ת\"א 35": "^TA35", "ta35": "^TA35", "תל אביב 35": "^TA35",
+    # FX
+    "דולר שקל": "ILS=X", "שקל": "ILS=X",
+    "יורו": "EURUSD=X", "euro": "EURUSD=X",
+}
+
+# Keywords that signal a financial query
+_FINANCIAL_SIGNALS: frozenset[str] = frozenset([
+    "מניה", "מניות", "שוק", "בורסה", "השקעה", "השקעות", "תיק", "קריפטו",
+    "ביטקוין", "נסדאק", "נסדק", "sp500", "ספ500", "דאו", "תשואה",
+    "דיבידנד", "etf", "ipo", "רווח", "הפסד", "אג\"ח", "קנייה", "מכירה",
+    "אפל", "גוגל", "אמזון", "מטא", "נבידיה", "טסלה", "מיקרוסופט",
+    "stock", "share", "invest", "portfolio", "crypto", "bitcoin", "market",
+    "nasdaq", "s&p", "bond", "equity", "trade", "earnings", "dividend",
+    "price", "rsi", "macd", "ticker", "fund", "זהב", "נפט", "ניתוח",
+    "לנתח", "לבדוק", "שווי", "מחיר", "כדאי", "לקנות", "למכור",
+])
+
+# Keywords that signal a clearly off-topic query
+_OFF_TOPIC_SIGNALS: frozenset[str] = frozenset([
+    "לברון", "לבראון", "קובי", "ברייאנט", "כדורסל", "כדורגל",
+    "מסי", "רונאלדו", "ספורט", "נבחרת", "ליגה", "גביע", "nba", "nfl",
+    "fifa", "champions", "שחקן כדור", "טורניר",
+    "נשיא ארה\"ב", "ראש ממשלה", "בחירות", "מפלגה",
+    "סרט", "אלבום", "זמר", "שחקן קולנוע", "טלוויזיה", "שיר",
+    "מזג אוויר", "בירה של", "בירת",
+])
+
+
+def _classify_intent(query: str) -> str:
+    """
+    Fast keyword pre-classifier.
+    Returns 'financial', 'off_topic', or 'ambiguous' (let LLM decide).
+    """
+    q = query.lower()
+    has_fin     = any(kw in q for kw in _FINANCIAL_SIGNALS)
+    has_offtop  = any(kw in q for kw in _OFF_TOPIC_SIGNALS)
+
+    if has_fin and not has_offtop:
+        return "financial"
+    if has_offtop and not has_fin:
+        return "off_topic"
+    return "ambiguous"   # LLM decides via system-prompt instruction
+
+
+def _fuzzy_resolve_ticker(name: str) -> str | None:
+    """
+    Translates a Hebrew company name / common alias to a ticker.
+    Exact match → substring match → None (let LLM reason it out).
+    """
+    n = name.lower().strip()
+    if n in HEBREW_TICKER_MAP:
+        return HEBREW_TICKER_MAP[n]
+    for key, ticker in HEBREW_TICKER_MAP.items():
+        if key in n or n in key:
+            return ticker
+    return None
+
+
 # ── System prompt ──────────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """You are Pro-Investor — a warm, encouraging financial guide who speaks to everyday investors in simple, friendly Hebrew. You are NOT a Wall Street analyst. You are a knowledgeable friend who makes investing approachable and understandable.
 
 PERSONALITY:
   - Always respond 100% in Hebrew — simple, clear language, zero financial jargon
   - Be encouraging and honest: celebrate opportunities, be transparent about risks
-  - If a tool call fails or returns an error, say in Hebrew:
-      "אני מצטער, הייתה לי בעיה טכנית במשיכת הנתונים עבור [הנכס]. אנסה גישה אחרת."
-    Then immediately retry with a different tool or provide a partial answer from what you know
+  - If a tool fails: "אני מצטער, הייתה לי בעיה טכנית במשיכת הנתונים עבור [הנכס]. אנסה גישה אחרת."
+    Then retry immediately or provide a partial answer from what you know
   - Never leave the user with an unexplained technical error
-  - If a user asks a general question (not about a specific stock), answer warmly and helpfully in Hebrew without forcing the stock-analysis format
 
-TOOLS AVAILABLE:
-  web_search_and_learn     → search web for current news/data, auto-stores in knowledge base
-  get_live_price           → real-time asset price
-  get_technical_indicators → RSI, MACD, Bollinger Bands, volatility, trend
-  get_investment_score     → quantitative score — returns ONLY human-readable Hebrew labels, inputs auto-validated
-  search_knowledge_base    → semantic search in local ChromaDB
-  get_asset_info           → sector, market cap, P/E, 52-week range
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 1 — INTENT CLASSIFICATION (before ANY tool call):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+If the query is NOT about finance/stocks/crypto/markets → respond immediately with NO tools:
+  "אני מומחה להשקעות ופיננסים, ולכן פחות מבין ב[נושא]. אשמח לעזור לך לנתח מניות או לבנות תיק השקעות!"
 
-MANDATORY WORKFLOW for any stock/asset question:
-  1. web_search_and_learn      → current news & sentiment (always do this FIRST)
-  2. get_technical_indicators  → price-action signals
-  3. get_investment_score      → quantitative ranking (returns human labels automatically)
-  4. search_knowledge_base     → additional stored context
-  5. Synthesize → structured Hebrew recommendation in the EXACT FORMAT below
+Off-topic examples (no tools, polite decline):
+  • ספורט: "מי טוב יותר לברון או קובי?"
+  • פוליטיקה: "מי ינצח בבחירות?"
+  • ידע כללי: "מה הבירה של צרפת?"
 
-RESPONSE FORMAT — every stock recommendation MUST use this exact structure:
+Financial examples (proceed to tools):
+  • "מה שווה אפל כרגע?" / "כדאי לקנות נסדק?" / "ביטקוין — קנייה או מכירה?"
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 2 — TICKER RESOLUTION (before calling any tool):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Always resolve Hebrew names to tickers BEFORE tool calls:
+  אפל→AAPL | גוגל/אלפבית→GOOGL | אמזון→AMZN | מטא/פייסבוק→META
+  נבידיה/אנבידיה/נבידייה→NVDA | טסלה/תיסלה→TSLA | מיקרוסופט→MSFT
+  נסדאק/נסדק→^IXIC | ספ500→^GSPC | דאו→^DJI | ת"א 35→^TA35
+  ביטקוין→BTC-USD | איתריום→ETH-USD | זהב→GC=F | נפט→CL=F
+  לאומי→LUMI.TA | פועלים→POLI.TA
+
+For typos (נסדק, נבידייה, תיסלה, etc.) — use your reasoning to infer the correct ticker.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STEP 3 — TOOL SELECTION (call only what the query actually needs):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Match tool depth to query complexity:
+
+  מחיר בלבד ("כמה שווה AAPL?"):
+    → get_live_price ONLY
+
+  מידע חברה ("ספר לי על אמזון"):
+    → get_asset_info ONLY
+
+  מגמה/מומנטום ("מה המגמה של NVDA?"):
+    → get_live_price + get_technical_indicators
+
+  המלצת השקעה מלאה ("כדאי לקנות?", "תנתח את"):
+    → web_search_and_learn → get_technical_indicators → get_investment_score → search_knowledge_base
+
+CHAIN OF THOUGHT — before calling any tool, think one line:
+  "המשתמש שאל [X]. אני צריך [כלים Y] בלבד כי [סיבה]."
+  Then call ONLY those tools. Never call extra tools "just in case."
+  Hard limit: maximum 4 tool calls per response.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RESPONSE FORMAT (full stock recommendation):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 **שם הנכס:** [Company Name — TICKER]
 
 **למה כדאי?** (בשפה פשוטה):
-[One clear sentence — explain the opportunity like you would to a friend, no jargon]
+[One clear sentence — explain the opportunity like you would to a friend]
 
 **מה הפוטנציאל?**
-[Use score_label and return_str from get_investment_score. Example: ציון טוב עם תשואה צפויה של +14% ב-12 חודשים]
+[Use score_label + return_str from get_investment_score]
 
-**מגמה ומומנטום:** [Use trend_he from get_investment_score, e.g. מגמה עולה 📈]
+**מגמה ומומנטום:** [Use trend_he from get_investment_score]
 
-**רמת סיכון:** [Use risk_label from get_investment_score, e.g. סיכון בינוני 🟡]
+**רמת סיכון:** [Use risk_label from get_investment_score]
 
-**שורה תחתונה:** [Use exactly the verdict field: ✅ קנייה / ⚠️ המתן / ❌ לא כרגע]
+**שורה תחתונה:** [verdict field: ✅ קנייה / ⚠️ המתן / ❌ לא כרגע]
+
+**רמת ודאות הסוכן:**
+  גבוהה 🟢 — web_search + technical + score כולם החזירו נתונים תקינים
+  בינונית 🟡 — 2 מתוך 3 מקורות עבדו
+  נמוכה 🔴 — מקור אחד בלבד, או היו שגיאות טכניות
 
 ---
-📰 **מקורות:** [List all source URLs from web_search_and_learn]
+📰 **מקורות:**
+[Format EACH URL from web_search_and_learn as a clickable markdown link: [כותרת המאמר](url)]
 
+💡 **שלב הבא:** [Suggest ONE specific follow-up action, e.g., "תרצה שאשווה את AAPL מול MSFT?" or "אבדוק גם את ביצועי הסקטור?"]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 STRICT RULES:
-  - NEVER show raw decimal numbers (e.g. 0.55, 0.127, 1.234) — use only Hebrew labels
-  - duration_months is automatically coerced to integer — just pass a number
-  - risk_tolerance is automatically validated — just pass low/medium/high
-  - Always greet the user by name on the first message if you know it
-  - Always end with source citations"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  - NEVER show raw decimals (0.55, 0.127) — Hebrew labels only
+  - NEVER call more than 4 tools per response
+  - duration_months is auto-coerced to integer — just pass a number
+  - risk_tolerance is auto-validated — just pass low/medium/high
+  - Always greet the user by name on the first message
+  - Always end full recommendations with 📰 מקורות + 💡 שלב הבא"""
 
 
 # ── Tool schemas ───────────────────────────────────────────────────────────────
@@ -336,9 +493,17 @@ class InvestmentAgent:
                 tag = f"web_{ticker or 'search'}_{datetime.now().strftime('%Y%m%d_%H%M')}"
                 self.rag.ingest_document(combined, source=tag)
 
-                parsed = {"count": len(results), "stored": True}
+                parsed = {
+                    "count": len(results),
+                    "stored": True,
+                    "sources": [
+                        {"title": r.get("title", ""), "url": r.get("href", "")}
+                        for r in results if r.get("href")
+                    ],
+                }
                 formatted = "\n\n---\n\n".join(
-                    f"**{r.get('title','')}**\n{r.get('body','')}\n🔗 {r.get('href','')}"
+                    f"**{r.get('title','')}**\n{r.get('body','')}\n"
+                    f"מקור: [{r.get('title', r.get('href',''))}]({r.get('href','')})"
                     for r in results
                 )
                 return formatted, parsed
@@ -409,7 +574,10 @@ class InvestmentAgent:
         icon, label = TOOL_META.get(tool_name, ("🔧", tool_name))
 
         if tool_name == "web_search_and_learn":
-            summary = f"חיפוש: \"{tool_input.get('query', '')}\" — {parsed.get('count', 0)} תוצאות נשמרו"
+            count   = parsed.get("count", 0)
+            sources = parsed.get("sources", [])
+            src_str = " | ".join(s["title"][:30] for s in sources[:3] if s.get("title"))
+            summary = f"חיפוש: \"{tool_input.get('query', '')}\" — {count} תוצאות" + (f" ({src_str})" if src_str else "")
         elif tool_name == "get_live_price":
             summary = f"{parsed.get('ticker', '')} — ${parsed.get('price', '?')}"
         elif tool_name == "get_technical_indicators":
@@ -449,6 +617,16 @@ class InvestmentAgent:
             f"{name_line}"
             f"פרופיל משקיע: תקציב=${budget:,.0f} | סיכון={risk_tolerance} | אופק={duration_months} חודשים"
         )
+
+        # ── Pre-flight: block clearly off-topic queries without an LLM call ─────
+        intent = _classify_intent(user_query)
+        if intent == "off_topic":
+            # Extract the topic word for a personalised decline
+            decline = (
+                "אני מומחה להשקעות ופיננסים, ולכן פחות מבין בנושא הזה. "
+                "אשמח לעזור לך לנתח מניות, לבדוק מחירים, או לבנות תיק השקעות! 📈"
+            )
+            return decline, []
 
         messages: list[dict] = [
             {"role": "system", "content": system_msg},
