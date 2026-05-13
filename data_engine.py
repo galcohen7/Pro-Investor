@@ -11,15 +11,42 @@ def get_live_price(ticker_symbol: str) -> float:
     return float(data["Close"].iloc[-1])
 
 
-def get_historical_data(ticker_symbol: str, period: str = "3mo") -> pd.DataFrame:
+# Maps each period to the finest interval yfinance allows for that window.
+# yfinance hard limits: 1m→7d, 5m/15m/30m→60d, 1h→730d, 1d→unlimited.
+_AUTO_INTERVAL: dict[str, str] = {
+    "1d":  "5m",
+    "5d":  "15m",
+    "1mo": "1h",
+    "3mo": "1d",
+    "6mo": "1d",
+    "1y":  "1d",
+    "2y":  "1d",
+    "5y":  "1wk",
+    "max": "1mo",
+}
+
+
+def get_historical_data(
+    ticker_symbol: str,
+    period: str = "3mo",
+    interval: str | None = None,
+) -> pd.DataFrame:
     """
     Fetches historical OHLCV data for a given ticker.
-    period options: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max
+
+    If interval is None, the finest interval supported by yfinance for the
+    requested period is selected automatically (e.g. 5m for 1d, 15m for 5d).
+
+    period options : 1d 5d 1mo 3mo 6mo 1y 2y 5y max
+    interval options: 1m 2m 5m 15m 30m 1h 1d 1wk 1mo
     """
+    if interval is None:
+        interval = _AUTO_INTERVAL.get(period, "1d")
+
     asset = yf.Ticker(ticker_symbol)
-    data = asset.history(period=period)
+    data  = asset.history(period=period, interval=interval)
     if data.empty:
-        raise ValueError(f"No historical data for ticker: {ticker_symbol}")
+        raise ValueError(f"No historical data for {ticker_symbol} (period={period}, interval={interval})")
     return data
 
 
