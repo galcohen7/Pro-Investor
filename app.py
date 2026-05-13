@@ -4,13 +4,51 @@ Dark financial theme, full RTL Hebrew interface.
 All user-facing text is in Hebrew; code/comments in English.
 """
 
+import json
 import os
+import socket
 import sys
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 sys.path.append(os.path.dirname(__file__))
+
+
+# ── BackendClient: tries TCP server, falls back to direct calls ────────────────
+class BackendClient:
+    """
+    Thin client that routes requests to the async TCP server (server.py) when
+    reachable, and silently falls back to direct local function calls otherwise.
+    The UI stays identical in both modes.
+    """
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765, timeout: float = 0.5):
+        self.host    = host
+        self.port    = port
+        self.timeout = timeout
+
+    def _send(self, payload: dict) -> dict | None:
+        try:
+            with socket.create_connection((self.host, self.port), timeout=self.timeout) as sock:
+                sock.sendall(json.dumps(payload).encode("utf-8"))
+                sock.settimeout(15.0)
+                chunks = []
+                while True:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                resp = json.loads(b"".join(chunks).decode("utf-8").strip())
+                return resp.get("data") if resp.get("success") else None
+        except Exception:
+            return None
+
+    def score(self, ticker: str, risk: str, months: int) -> dict | None:
+        return self._send({"action": "score", "ticker": ticker, "risk": risk, "months": months})
+
+    def price(self, ticker: str) -> float | None:
+        result = self._send({"action": "price", "ticker": ticker})
+        return result.get("price") if result else None
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────────
 st.set_page_config(
@@ -34,6 +72,13 @@ else:
 from agent import InvestmentAgent
 from data_engine import get_historical_data, get_multiple_prices
 from scoring_engine import score_ticker
+from database import init_db, get_or_create_user, save_recommendation, get_recent_recommendations, get_stats
+
+# Ensure DB tables exist (safe to call on every run)
+try:
+    init_db()
+except Exception:
+    pass
 
 # ── Dark Financial Theme CSS ───────────────────────────────────────────────────
 st.markdown("""
@@ -190,6 +235,8 @@ if "agent"        not in st.session_state:
     st.session_state.agent = InvestmentAgent()
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
+if "backend"      not in st.session_state:
+    st.session_state.backend = BackendClient()
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
@@ -242,7 +289,9 @@ st.markdown(
 st.divider()
 
 # ── Tabs ───────────────────────────────────────────────────────────────────────
-tab_chat, tab_analyze, tab_chart = st.tabs(["💬 ייעוץ AI", "📊 ניתוח שוק", "📈 גרפים"])
+tab_chat, tab_analyze, tab_chart, tab_history = st.tabs([
+    "💬 ייעוץ AI", "📊 ניתוח שוק", "📈 גרפים", "📋 היסטוריה"
+])
 
 # ══════════════════════════════════════════════════════════════════════════════
 # TAB 1 — AI Chat
@@ -304,6 +353,29 @@ with tab_chat:
                 st.session_state.chat_history.append(
                     {"role": "assistant", "content": answer, "tool_log": tool_log}
                 )
+
+                # Save recommendation to DB (best-effort — never blocks the UI)
+                try:
+                    profile = {"budget": budget, "risk_tolerance": risk, "duration_months": duration}
+                    user_id = get_or_create_user(
+                        budget=float(budget),
+                        risk_tolerance=risk,
+                        duration_months=int(duration),
+                    )
+                    for step in tool_log:
+                        if step.get("tool") == "get_investment_score" and step.get("data"):
+                            d = step["data"]
+                            save_recommendation(
+                                ticker=d.get("ticker", ""),
+                                verdict=d.get("human", {}).get("verdict_raw", "WAIT"),
+                                price=float(d.get("current_price", 0)),
+                                score_data=d,
+                                ai_response=answer,
+                                user_id=user_id,
+                            )
+                            break
+                except Exception:
+                    pass
 
             except Exception as exc:
                 status.update(label="❌ שגיאה", state="error")
@@ -457,6 +529,49 @@ with tab_chart:
 
             except Exception as exc:
                 st.error(f"❌ שגיאה: {exc}")
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TAB 4 — Recommendation History
+# ══════════════════════════════════════════════════════════════════════════════
+with tab_history:
+    st.markdown(
+        "<h3 style='text-align:right; direction:rtl;'>📋 היסטוריית המלצות</h3>",
+        unsafe_allow_html=True,
+    )
+
+    if st.button("🔄 רענן", key="refresh_history"):
+        st.rerun()
+
+    try:
+        stats = get_stats()
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("סה\"כ המלצות", stats["total"])
+        c2.metric("✅ קנייה", stats["buys"])
+        c3.metric("⚠️ המתן", stats["waits"])
+        c4.metric("❌ הימנע", stats["avoids"])
+
+        st.divider()
+
+        recs = get_recent_recommendations(50)
+        if recs:
+            VERDICT_HE = {"BUY": "✅ קנייה", "WAIT": "⚠️ המתן", "AVOID": "❌ הימנע"}
+            df_hist = pd.DataFrame([
+                {
+                    "תאריך":       r["date"],
+                    "טיקר":        r["ticker"],
+                    "פסיקה":       VERDICT_HE.get(r["verdict"], r["verdict"]),
+                    "מחיר":        f"${r['price']:.2f}" if r["price"] else "—",
+                    "ציון":        f"{r['score']:.4f}" if r["score"] else "—",
+                    "תשואה צפויה": f"{r['return']*100:.1f}%" if r["return"] else "—",
+                }
+                for r in recs
+            ])
+            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+        else:
+            st.info("📭 אין המלצות שמורות עדיין. שאל את הסוכן על מניה בלשונית ייעוץ AI!")
+
+    except Exception as exc:
+        st.error(f"❌ שגיאת בסיס נתונים: {exc}")
 
 # ── Footer ─────────────────────────────────────────────────────────────────────
 st.divider()

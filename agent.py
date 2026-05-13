@@ -15,7 +15,7 @@ from groq import Groq
 
 from data_engine import get_live_price, get_asset_info
 from technical_indicators import get_all_indicators
-from scoring_engine import score_ticker
+from scoring_engine import score_ticker, score_to_human_readable
 from rag_pipeline import RAGPipeline
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
@@ -23,25 +23,45 @@ GROQ_MODEL = "llama-3.3-70b-versatile"
 SYSTEM_PROMPT = """You are Pro-Investor, an elite autonomous AI investment advisor.
 
 TOOLS AVAILABLE:
-  web_search_and_learn   → search web for current news/data, auto-stores in knowledge base
-  get_live_price         → real-time asset price
+  web_search_and_learn     → search web for current news/data, auto-stores in knowledge base
+  get_live_price           → real-time asset price
   get_technical_indicators → RSI, MACD, Bollinger Bands, volatility, trend
-  get_investment_score   → Score = (P_profit × Return) / Risk  (quantitative)
-  search_knowledge_base  → semantic search in local ChromaDB
-  get_asset_info         → sector, market cap, P/E, 52-week range
+  get_investment_score     → quantitative score already translated to Hebrew labels — use these labels directly
+  search_knowledge_base    → semantic search in local ChromaDB
+  get_asset_info           → sector, market cap, P/E, 52-week range
 
-MANDATORY WORKFLOW for any stock question:
-  1. web_search_and_learn  → current news & sentiment
-  2. get_technical_indicators → price-action signals
-  3. get_investment_score  → quantitative ranking
-  4. search_knowledge_base → stored context
-  5. Synthesize → structured Hebrew recommendation with cited sources
+MANDATORY WORKFLOW for any stock/asset question:
+  1. web_search_and_learn      → current news & sentiment
+  2. get_technical_indicators  → price-action signals
+  3. get_investment_score      → quantitative ranking (returns human-readable Hebrew labels)
+  4. search_knowledge_base     → stored context
+  5. Synthesize → structured Hebrew recommendation in the EXACT FORMAT below
+
+RESPONSE FORMAT — use this EXACT structure every time:
+
+**שם הנכס:** [Company Name — TICKER]
+
+**למה כדאי?** (בשפה פשוטה):
+[One clear sentence explaining the opportunity in plain language — no financial jargon]
+
+**מה הפוטנציאל?**
+[Use score_label and return_str from get_investment_score. Example: ציון מצוין עם תשואה צפויה של +18% ב-12 חודשים]
+
+**מגמה ומומנטום:** [Use trend_he from get_investment_score. Example: מגמה עולה 📈]
+
+**רמת סיכון:** [Use risk_label from get_investment_score. Example: סיכון בינוני 🟡]
+
+**שורה תחתונה:** [Use exactly the verdict field from get_investment_score: ✅ קנייה / ⚠️ המתן / ❌ לא כרגע]
+
+---
+📰 **מקורות:** [List all URLs from web_search_and_learn]
 
 STRICT RULES:
-  - duration_months MUST be an INTEGER number (e.g. 12), never a quoted string
+  - NEVER show raw decimal numbers (e.g. 0.55, 0.127, 1.234) — use only the Hebrew labels from get_investment_score
+  - duration_months MUST be an INTEGER (e.g. 12), never a quoted string
   - risk_tolerance MUST be exactly one of: low / medium / high
-  - Always cite the source URLs found via web search
-  - Respond in Hebrew; use clear sections with headers"""
+  - Always cite source URLs from web searches
+  - Respond entirely in Hebrew"""
 
 # ── Tool schemas ─────────────────────────────────────────────────────────────
 TOOLS = [
@@ -264,8 +284,25 @@ class InvestmentAgent:
 
                 result = score_ticker(sym, rt, dm)
                 result.pop("indicators", None)
+                human  = score_to_human_readable({**result, "ticker": sym, "duration_months": dm})
+                result["human"] = human
                 parsed = result
-                return json.dumps(result), parsed
+
+                # Return only human-readable labels to the LLM — never raw decimals
+                llm_view = {
+                    "ticker":        sym,
+                    "current_price": f"${result['current_price']:.2f}",
+                    "target_price":  f"${result['target_price']:.2f}",
+                    "score_label":   human["score_label"],
+                    "risk_label":    human["risk_label"],
+                    "potential":     human["potential"],
+                    "return_str":    human["return_str"],
+                    "verdict":       human["verdict"],
+                    "verdict_raw":   human["verdict_raw"],
+                    "trend_he":      human["trend_he"],
+                    "summary_line":  human["summary_line"],
+                }
+                return json.dumps(llm_view, ensure_ascii=False), parsed
 
             # ── RAG search ────────────────────────────────────────────────────
             elif tool_name == "search_knowledge_base":
@@ -313,7 +350,7 @@ class InvestmentAgent:
         else:
             summary = str(parsed)[:80]
 
-        return {"icon": icon, "label": label, "summary": summary, "tool": tool_name}
+        return {"icon": icon, "label": label, "summary": summary, "tool": tool_name, "data": parsed}
 
     # ── Public API ─────────────────────────────────────────────────────────────
 

@@ -5,6 +5,9 @@ Core formula:
     Score = (Probability_Profit × Expected_Return) / Risk_Factor
 
 Each component is derived from technical indicators and the user's risk profile.
+
+Also provides score_to_human_readable() — converts raw decimals into
+beginner-friendly Hebrew labels so the UI never exposes numbers like 0.55.
 """
 
 from technical_indicators import get_all_indicators
@@ -103,6 +106,96 @@ def calculate_investment_score(
     if risk_factor <= 0 or expected_return <= 0:
         return 0.0
     return (prob_profit * expected_return) / risk_factor
+
+
+def score_to_human_readable(score_data: dict) -> dict:
+    """
+    Converts raw numerical scores into beginner-friendly Hebrew labels.
+    NEVER expose raw decimals (e.g. 0.55) to the end user through this layer.
+
+    Returns a dict with:
+      score_label   — descriptive quality rating
+      risk_label    — plain-language risk level
+      potential     — growth potential with intuitive percentage
+      return_str    — expected return as readable string
+      verdict       — Hebrew buy/wait/avoid verdict with emoji
+      verdict_raw   — machine-readable: BUY / WAIT / AVOID
+      trend_he      — Hebrew trend description
+      summary_line  — one-sentence Hebrew summary for the AI to cite
+    """
+    score  = score_data.get("investment_score", 0.0)
+    prob   = score_data.get("probability_profit", 0.5)
+    ret    = score_data.get("expected_return", 0.0)
+    risk   = score_data.get("risk_factor", 0.3)
+    trend  = score_data.get("trend", "neutral")
+    ticker = score_data.get("ticker", "")
+
+    # ── Investment score label ────────────────────────────────────────────────
+    if score >= 0.50:    score_label = "🌟 מצוין"
+    elif score >= 0.30:  score_label = "✅ טוב"
+    elif score >= 0.15:  score_label = "🟡 בינוני"
+    elif score >= 0.05:  score_label = "🟠 חלש"
+    else:                score_label = "🔴 לא מומלץ"
+
+    # ── Risk label ────────────────────────────────────────────────────────────
+    if risk < 0.12:    risk_label = "סיכון נמוך מאוד 🟢"
+    elif risk < 0.22:  risk_label = "סיכון נמוך 🟢"
+    elif risk < 0.33:  risk_label = "סיכון בינוני 🟡"
+    elif risk < 0.48:  risk_label = "סיכון גבוה 🟠"
+    else:              risk_label = "סיכון גבוה מאוד 🔴"
+
+    # ── Growth potential ──────────────────────────────────────────────────────
+    prob_pct = round(prob * 100)
+    if prob_pct >= 70:    potential = f"פוטנציאל צמיחה גבוה מאוד ({prob_pct}%)"
+    elif prob_pct >= 60:  potential = f"פוטנציאל צמיחה גבוה ({prob_pct}%)"
+    elif prob_pct >= 50:  potential = f"פוטנציאל צמיחה סביר ({prob_pct}%)"
+    elif prob_pct >= 40:  potential = f"פוטנציאל צמיחה נמוך ({prob_pct}%)"
+    else:                 potential = f"פוטנציאל צמיחה נמוך מאוד ({prob_pct}%)"
+
+    # ── Expected return string ────────────────────────────────────────────────
+    ret_pct = round(ret * 100, 1)
+    if ret_pct > 0:
+        return_str = f"תשואה צפויה: +{ret_pct}% ב-{score_data.get('duration_months', '')} חודשים" \
+                     if score_data.get("duration_months") else f"תשואה צפויה: +{ret_pct}%"
+    elif ret_pct < 0:
+        return_str = f"ירידה צפויה: {ret_pct}%"
+    else:
+        return_str = "תשואה צפויה: ניטרלית"
+
+    # ── Trend (Hebrew) ────────────────────────────────────────────────────────
+    trend_map = {
+        "bullish": "מגמה עולה 📈",
+        "bearish": "מגמה יורדת 📉",
+        "neutral": "מגמה ניטרלית ➡️",
+    }
+    trend_he = trend_map.get(trend, trend)
+
+    # ── Verdict ───────────────────────────────────────────────────────────────
+    if score >= 0.28 and prob >= 0.58 and trend in ("bullish", "neutral"):
+        verdict     = "✅ קנייה"
+        verdict_raw = "BUY"
+    elif score >= 0.12 or prob >= 0.50:
+        verdict     = "⚠️ המתן"
+        verdict_raw = "WAIT"
+    else:
+        verdict     = "❌ לא כרגע"
+        verdict_raw = "AVOID"
+
+    # ── One-line summary for AI context ──────────────────────────────────────
+    summary_line = (
+        f"{ticker}: {score_label} | {risk_label} | {potential} | {trend_he} → {verdict}"
+    )
+
+    return {
+        "score_label":   score_label,
+        "risk_label":    risk_label,
+        "potential":     potential,
+        "return_str":    return_str,
+        "verdict":       verdict,
+        "verdict_raw":   verdict_raw,
+        "trend_he":      trend_he,
+        "summary_line":  summary_line,
+    }
 
 
 def score_ticker(ticker_symbol: str, risk_tolerance: str, duration_months: int) -> dict:

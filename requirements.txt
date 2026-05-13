@@ -10,3 +10,4 @@ plotly>=5.20.0
 requests>=2.31.0
 protobuf>=3.20.0,<4.0.0
 duckduckgo-search>=6.0.0
+sqlalchemy>=2.0.0
