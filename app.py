@@ -90,11 +90,22 @@ st.markdown("""
     padding: 0;
 }
 
-/* ── Base colors ── */
-html, body, .stApp {
+/* ── Base colors + ABSOLUTE NO-SCROLL root ── */
+html, body {
     background-color: #000000 !important;
     color: #ffffff !important;
-    overflow-x: hidden !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    overflow: hidden !important;
+}
+.stApp {
+    background-color: #000000 !important;
+    color: #ffffff !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: row !important;
 }
 
 /* ── Hide Streamlit chrome (header, footer, deploy button) ── */
@@ -105,16 +116,29 @@ html, body, .stApp {
 footer                       { display: none !important; }
 [data-testid="stToolbar"]    { display: none !important; }
 
-/* ── Collapse block-container padding ── */
+/* ── Main content: flex-column fills remaining viewport height ── */
+section.main, [data-testid="stMain"] {
+    flex: 1 1 0 !important;
+    min-width: 0 !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
+    padding-top: 0 !important;
+}
 .block-container {
-    padding-top: 0.6rem !important;
-    padding-bottom: 0.4rem !important;
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    padding-top: 0.5rem !important;
+    padding-bottom: 0 !important;
     padding-left: 0.6rem !important;
     padding-right: 0.6rem !important;
     max-width: 100% !important;
-    overflow-x: hidden !important;
+    overflow: hidden !important;
+    display: flex !important;
+    flex-direction: column !important;
 }
-section.main { padding-top: 0 !important; overflow-x: hidden !important; }
 
 /* ── RTL — every text node ── */
 .stApp { direction: rtl !important; }
@@ -127,39 +151,76 @@ label, button, input, textarea, select,
     text-align: right !important;
 }
 
-/* ── Sidebar ── */
+/* ── Sidebar: absolute overflow lockdown + fixed width ── */
 section[data-testid="stSidebar"] {
     background: #111111 !important;
     border-left: 1px solid rgba(255,255,255,0.06) !important;
     border-right: none !important;
+    width: 230px !important;
+    min-width: 230px !important;
+    max-width: 230px !important;
+    height: 100vh !important;
+    max-height: 100vh !important;
+    overflow: hidden !important;
+    flex-shrink: 0 !important;
+}
+/* All descendant containers: width 100% + box-sizing, no horizontal push */
+section[data-testid="stSidebar"] > div,
+section[data-testid="stSidebar"] > div > div,
+section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: hidden !important;
+    box-sizing: border-box !important;
+    min-width: 0 !important;
 }
 section[data-testid="stSidebar"] > div:first-child {
-    padding-top: 0.6rem !important;
-    padding-bottom: 0.4rem !important;
+    padding-top: 0.5rem !important;
+    padding-bottom: 0 !important;
+    overflow: hidden !important;
 }
 section[data-testid="stSidebar"] * {
     direction: rtl !important;
     text-align: right !important;
+    box-sizing: border-box !important;
+    max-width: 100% !important;
 }
 /* Collapse sidebar widget margins */
 section[data-testid="stSidebar"] .element-container {
-    margin-bottom: 0.2rem !important;
+    margin-bottom: 0.12rem !important;
 }
 section[data-testid="stSidebar"] hr {
-    margin: 0.35rem 0 !important;
+    margin: 0.22rem 0 !important;
 }
+/* Compact labels */
 section[data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {
-    font-size: 0.75rem !important;
+    font-size: 0.68rem !important;
     color: #727272 !important;
+    margin-bottom: 0 !important;
+    line-height: 1.2 !important;
 }
-
-/* ── Compact sidebar number/select/slider ── */
+/* Compact inputs + selects + slider */
 section[data-testid="stSidebar"] [data-testid="stNumberInput"] {
     margin-bottom: 0 !important;
+}
+section[data-testid="stSidebar"] [data-testid="stNumberInput"] input {
+    font-size: 0.76rem !important;
+    padding: 3px 8px !important;
+    height: 28px !important;
 }
 section[data-testid="stSidebar"] [data-baseweb="select"] {
     margin-bottom: 0 !important;
 }
+section[data-testid="stSidebar"] [data-baseweb="select"] > div {
+    font-size: 0.76rem !important;
+    padding: 2px 6px !important;
+    min-height: 28px !important;
+}
+section[data-testid="stSidebar"] [data-testid="stSlider"] {
+    padding-top: 0.1rem !important;
+}
+/* Kill the drag-resize handle — sidebar width is fixed */
+[data-testid="stSidebarResizeHandle"] { display: none !important; }
 
 /* ── Tabs (underline, Spotify-style) ── */
 .stTabs [data-baseweb="tab-list"] {
@@ -613,21 +674,65 @@ div[class*="alert"], div[class*="Alert"] {
     overflow: hidden !important;
 }
 
-/* ── Sidebar: kill ghost scrollbar + trailing empty space ── */
+/* ── Sidebar final lock: stSidebarUserContent ── */
 section[data-testid="stSidebar"] [data-testid="stSidebarUserContent"] {
-    overflow-y: hidden !important;
-    height: fit-content !important;
+    overflow: hidden !important;
+    height: auto !important;
     padding-bottom: 0 !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
 }
-section[data-testid="stSidebar"] > div:first-child {
+
+/* ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   FLEX CHAIN: tabs expand to fill remaining height
+   Tab panels get their OWN internal scroll (no page scroll at all)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ */
+.stTabs {
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: hidden !important;
+}
+.stTabs [data-baseweb="tab-list"] {
+    flex-shrink: 0 !important;
+}
+/* The ONLY scroll surface: each tab panel */
+.stTabs [data-baseweb="tab-panel"],
+[data-baseweb="tab-panel"],
+[data-testid="stTabContent"] {
+    flex: 1 1 0 !important;
+    min-height: 0 !important;
+    overflow-y: auto !important;
+    overflow-x: hidden !important;
     scrollbar-width: thin !important;
-    scrollbar-color: rgba(255,255,255,0.06) transparent !important;
+    scrollbar-color: rgba(255,255,255,0.08) transparent !important;
+    padding-bottom: 4px !important;
 }
-section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar { width: 3px !important; }
-section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-track { background: transparent !important; }
-section[data-testid="stSidebar"] > div:first-child::-webkit-scrollbar-thumb {
-    background: rgba(255,255,255,0.06) !important;
+[data-baseweb="tab-panel"]::-webkit-scrollbar { width: 4px !important; }
+[data-baseweb="tab-panel"]::-webkit-scrollbar-track { background: transparent !important; }
+[data-baseweb="tab-panel"]::-webkit-scrollbar-thumb {
+    background: rgba(255,255,255,0.08) !important;
     border-radius: 2px !important;
+}
+
+/* ── Chat input: sticky at bottom of the scrollable tab panel ── */
+[data-testid="stBottom"] {
+    position: sticky !important;
+    bottom: 0 !important;
+    z-index: 200 !important;
+    background: #000000 !important;
+    padding: 3px 0 !important;
+    flex-shrink: 0 !important;
+    border-top: 1px solid rgba(255,255,255,0.05) !important;
+}
+
+/* ── Plotly chart: never expand beyond its container ── */
+[data-testid="stPlotlyChart"],
+[data-testid="stPlotlyChart"] > div {
+    width: 100% !important;
+    max-width: 100% !important;
+    overflow: hidden !important;
 }
 
 /* ── RTL: exhaustive [data-testid="stMarkdownContainer"] targeting ── */
