@@ -1,9 +1,11 @@
 """
 Autonomous AI Investment Agent — powered by Groq (free LLM API).
 
-Key upgrades in this version:
+Key features:
+  - Pydantic input models: strict schema enforcement + automatic type coercion
+  - Friendly-guide persona: warm Hebrew responses, graceful error recovery in Hebrew
   - web_search_and_learn: DuckDuckGo search → auto-stores results in ChromaDB
-  - All tool inputs defensively cast (int/float) to prevent Groq 400 errors
+  - get_investment_score: returns only human-readable Hebrew labels (no raw decimals)
   - run() returns (answer: str, tool_log: list) for UI display
 """
 
@@ -20,50 +22,130 @@ from rag_pipeline import RAGPipeline
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are Pro-Investor, an elite autonomous AI investment advisor.
+# ── Pydantic validation models — coerce and validate LLM tool arguments ────────
+# Pydantic 1.x is installed as a transitive dep of chromadb==0.4.24.
+# These models guarantee correct types even when the LLM sends "12" (str) for
+# duration_months (int), preventing Groq 400 "expected integer, got string" errors.
+try:
+    from pydantic import BaseModel
+    from pydantic import validator as _v
+
+    class _ScoreInput(BaseModel):
+        ticker_symbol: str = "AAPL"
+        risk_tolerance: str = "medium"
+        duration_months: int = 12
+
+        @_v("ticker_symbol", pre=True, always=True)
+        @classmethod
+        def _t(cls, v):
+            return str(v).strip().upper() or "AAPL"
+
+        @_v("risk_tolerance", pre=True, always=True)
+        @classmethod
+        def _r(cls, v):
+            s = str(v).lower().strip()
+            return s if s in ("low", "medium", "high") else "medium"
+
+        @_v("duration_months", pre=True, always=True)
+        @classmethod
+        def _m(cls, v):
+            return max(1, min(120, int(float(str(v)))))
+
+    class _TickerInput(BaseModel):
+        ticker_symbol: str
+
+        @_v("ticker_symbol", pre=True, always=True)
+        @classmethod
+        def _t(cls, v):
+            return str(v).strip().upper()
+
+    _PYDANTIC = True
+
+except Exception:
+    _PYDANTIC = False
+
+
+def _parse_score(raw: dict, risk_default: str, months_default: int) -> tuple:
+    """Returns (ticker: str, risk: str, months: int) with guaranteed correct types."""
+    merged = {"risk_tolerance": risk_default, "duration_months": months_default, **raw}
+    if _PYDANTIC:
+        try:
+            m = _ScoreInput(**merged)
+            return m.ticker_symbol, m.risk_tolerance, m.duration_months
+        except Exception:
+            pass
+    # Manual fallback when Pydantic unavailable
+    sym = str(raw.get("ticker_symbol", "")).strip().upper()
+    rt  = str(raw.get("risk_tolerance", risk_default)).lower().strip()
+    rt  = rt if rt in ("low", "medium", "high") else "medium"
+    dm  = max(1, int(float(str(raw.get("duration_months", months_default)))))
+    return sym, rt, dm
+
+
+def _parse_ticker(raw: dict) -> str:
+    if _PYDANTIC:
+        try:
+            return _TickerInput(**raw).ticker_symbol
+        except Exception:
+            pass
+    return str(raw.get("ticker_symbol", "")).strip().upper()
+
+
+# ── System prompt ──────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """You are Pro-Investor — a warm, encouraging financial guide who speaks to everyday investors in simple, friendly Hebrew. You are NOT a Wall Street analyst. You are a knowledgeable friend who makes investing approachable and understandable.
+
+PERSONALITY:
+  - Always respond 100% in Hebrew — simple, clear language, zero financial jargon
+  - Be encouraging and honest: celebrate opportunities, be transparent about risks
+  - If a tool call fails or returns an error, say in Hebrew:
+      "אני מצטער, הייתה לי בעיה טכנית במשיכת הנתונים עבור [הנכס]. אנסה גישה אחרת."
+    Then immediately retry with a different tool or provide a partial answer from what you know
+  - Never leave the user with an unexplained technical error
+  - If a user asks a general question (not about a specific stock), answer warmly and helpfully in Hebrew without forcing the stock-analysis format
 
 TOOLS AVAILABLE:
   web_search_and_learn     → search web for current news/data, auto-stores in knowledge base
   get_live_price           → real-time asset price
   get_technical_indicators → RSI, MACD, Bollinger Bands, volatility, trend
-  get_investment_score     → quantitative score already translated to Hebrew labels — use these labels directly
+  get_investment_score     → quantitative score — returns ONLY human-readable Hebrew labels, inputs auto-validated
   search_knowledge_base    → semantic search in local ChromaDB
   get_asset_info           → sector, market cap, P/E, 52-week range
 
 MANDATORY WORKFLOW for any stock/asset question:
-  1. web_search_and_learn      → current news & sentiment
+  1. web_search_and_learn      → current news & sentiment (always do this FIRST)
   2. get_technical_indicators  → price-action signals
-  3. get_investment_score      → quantitative ranking (returns human-readable Hebrew labels)
-  4. search_knowledge_base     → stored context
+  3. get_investment_score      → quantitative ranking (returns human labels automatically)
+  4. search_knowledge_base     → additional stored context
   5. Synthesize → structured Hebrew recommendation in the EXACT FORMAT below
 
-RESPONSE FORMAT — use this EXACT structure every time:
+RESPONSE FORMAT — every stock recommendation MUST use this exact structure:
 
 **שם הנכס:** [Company Name — TICKER]
 
 **למה כדאי?** (בשפה פשוטה):
-[One clear sentence explaining the opportunity in plain language — no financial jargon]
+[One clear sentence — explain the opportunity like you would to a friend, no jargon]
 
 **מה הפוטנציאל?**
-[Use score_label and return_str from get_investment_score. Example: ציון מצוין עם תשואה צפויה של +18% ב-12 חודשים]
+[Use score_label and return_str from get_investment_score. Example: ציון טוב עם תשואה צפויה של +14% ב-12 חודשים]
 
-**מגמה ומומנטום:** [Use trend_he from get_investment_score. Example: מגמה עולה 📈]
+**מגמה ומומנטום:** [Use trend_he from get_investment_score, e.g. מגמה עולה 📈]
 
-**רמת סיכון:** [Use risk_label from get_investment_score. Example: סיכון בינוני 🟡]
+**רמת סיכון:** [Use risk_label from get_investment_score, e.g. סיכון בינוני 🟡]
 
-**שורה תחתונה:** [Use exactly the verdict field from get_investment_score: ✅ קנייה / ⚠️ המתן / ❌ לא כרגע]
+**שורה תחתונה:** [Use exactly the verdict field: ✅ קנייה / ⚠️ המתן / ❌ לא כרגע]
 
 ---
-📰 **מקורות:** [List all URLs from web_search_and_learn]
+📰 **מקורות:** [List all source URLs from web_search_and_learn]
 
 STRICT RULES:
-  - NEVER show raw decimal numbers (e.g. 0.55, 0.127, 1.234) — use only the Hebrew labels from get_investment_score
-  - duration_months MUST be an INTEGER (e.g. 12), never a quoted string
-  - risk_tolerance MUST be exactly one of: low / medium / high
-  - Always cite source URLs from web searches
-  - Respond entirely in Hebrew"""
+  - NEVER show raw decimal numbers (e.g. 0.55, 0.127, 1.234) — use only Hebrew labels
+  - duration_months is automatically coerced to integer — just pass a number
+  - risk_tolerance is automatically validated — just pass low/medium/high
+  - Always greet the user by name on the first message if you know it
+  - Always end with source citations"""
 
-# ── Tool schemas ─────────────────────────────────────────────────────────────
+
+# ── Tool schemas ───────────────────────────────────────────────────────────────
 TOOLS = [
     {
         "type": "function",
@@ -128,7 +210,11 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "get_investment_score",
-            "description": "Quantitative score: Score = (Probability_Profit × Expected_Return) / Risk_Factor. Returns full breakdown.",
+            "description": (
+                "Calculates Score = (Probability_Profit × Expected_Return) / Risk_Factor. "
+                "Returns ONLY human-readable Hebrew labels — no raw decimals exposed. "
+                "All inputs are automatically validated and type-coerced."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -200,14 +286,13 @@ TOOL_META = {
 class InvestmentAgent:
     """
     Autonomous investment agent: Groq LLM + local tools + DuckDuckGo web search.
-    Knowledge learned from web searches is persisted in ChromaDB for future queries.
+    Pydantic models coerce LLM tool inputs to correct types before execution.
+    On tool failure, returns a Hebrew error so the LLM can recover gracefully.
     """
 
     def __init__(self):
         self.client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
         self.rag = RAGPipeline()
-
-    # ── Private helpers ────────────────────────────────────────────────────────
 
     def _ddg_search(self, query: str, max_results: int = 5) -> list[dict]:
         """Performs a DuckDuckGo text search; returns list of result dicts."""
@@ -226,8 +311,10 @@ class InvestmentAgent:
         duration_months: int,
     ) -> tuple[str, dict]:
         """
-        Runs one tool call. Returns (result_string_for_llm, parsed_dict_for_ui).
-        All numeric fields are defensively cast to prevent LLM type-mismatch errors.
+        Runs one tool call. Pydantic models coerce inputs before execution.
+        Returns (result_string_for_llm, parsed_dict_for_ui).
+        On any error: returns a Hebrew error message so the LLM can explain
+        the issue to the user and try an alternative approach.
         """
         parsed: dict = {}
         try:
@@ -239,9 +326,8 @@ class InvestmentAgent:
 
                 results = self._ddg_search(full_q)
                 if not results or not results[0].get("body"):
-                    return "No web results found.", {"count": 0}
+                    return "לא נמצאו תוצאות חיפוש.", {"count": 0}
 
-                # Build document text and store in ChromaDB
                 doc_parts = [
                     f"Title: {r.get('title', '')}\n{r.get('body', '')}\nURL: {r.get('href', '')}"
                     for r in results
@@ -251,8 +337,6 @@ class InvestmentAgent:
                 self.rag.ingest_document(combined, source=tag)
 
                 parsed = {"count": len(results), "stored": True}
-
-                # Format for LLM context
                 formatted = "\n\n---\n\n".join(
                     f"**{r.get('title','')}**\n{r.get('body','')}\n🔗 {r.get('href','')}"
                     for r in results
@@ -261,26 +345,21 @@ class InvestmentAgent:
 
             # ── Live price ────────────────────────────────────────────────────
             elif tool_name == "get_live_price":
-                sym   = str(tool_input["ticker_symbol"]).strip().upper()
+                sym   = _parse_ticker(tool_input)
                 price = get_live_price(sym)
                 parsed = {"ticker": sym, "price": round(price, 2)}
                 return json.dumps(parsed), parsed
 
             # ── Technical indicators ──────────────────────────────────────────
             elif tool_name == "get_technical_indicators":
-                sym    = str(tool_input["ticker_symbol"]).strip().upper()
+                sym    = _parse_ticker(tool_input)
                 result = get_all_indicators(sym)
                 parsed = result
                 return json.dumps(result), parsed
 
-            # ── Investment score ──────────────────────────────────────────────
+            # ── Investment score (Pydantic-coerced inputs) ────────────────────
             elif tool_name == "get_investment_score":
-                sym = str(tool_input["ticker_symbol"]).strip().upper()
-                rt  = str(tool_input.get("risk_tolerance", risk_tolerance)).lower().strip()
-                # Defensive cast: LLM sometimes sends "12" (string) instead of 12 (int)
-                dm  = int(float(str(tool_input.get("duration_months", duration_months))))
-                if rt not in ("low", "medium", "high"):
-                    rt = "medium"
+                sym, rt, dm = _parse_score(tool_input, risk_tolerance, duration_months)
 
                 result = score_ticker(sym, rt, dm)
                 result.pop("indicators", None)
@@ -288,7 +367,7 @@ class InvestmentAgent:
                 result["human"] = human
                 parsed = result
 
-                # Return only human-readable labels to the LLM — never raw decimals
+                # Return only human-readable labels to LLM — never raw decimals
                 llm_view = {
                     "ticker":        sym,
                     "current_price": f"${result['current_price']:.2f}",
@@ -306,13 +385,13 @@ class InvestmentAgent:
 
             # ── RAG search ────────────────────────────────────────────────────
             elif tool_name == "search_knowledge_base":
-                context = self.rag.get_context_string(str(tool_input["query"]))
+                context = self.rag.get_context_string(str(tool_input.get("query", "")))
                 parsed  = {"found": len(context) > 60}
                 return context, parsed
 
             # ── Asset fundamentals ────────────────────────────────────────────
             elif tool_name == "get_asset_info":
-                sym  = str(tool_input["ticker_symbol"]).strip().upper()
+                sym  = _parse_ticker(tool_input)
                 info = get_asset_info(sym)
                 parsed = info
                 return json.dumps(info), parsed
@@ -321,14 +400,14 @@ class InvestmentAgent:
                 return json.dumps({"error": f"Unknown tool: {tool_name}"}), {}
 
         except Exception as exc:
-            err = {"error": str(exc)}
-            return json.dumps(err), err
+            # Hebrew error returned to LLM so it can explain the issue gracefully
+            err_he = f"הכלי '{tool_name}' נתקל בשגיאה טכנית: {exc}"
+            return err_he, {"error": str(exc), "tool": tool_name}
 
     def _build_tool_log_entry(self, tool_name: str, tool_input: dict, parsed: dict) -> dict:
-        """Creates a structured log entry for UI rendering."""
+        """Creates a structured log entry for UI rendering. Includes raw parsed data for DB logging."""
         icon, label = TOOL_META.get(tool_name, ("🔧", tool_name))
 
-        # Build a short human-readable summary per tool type
         if tool_name == "web_search_and_learn":
             summary = f"חיפוש: \"{tool_input.get('query', '')}\" — {parsed.get('count', 0)} תוצאות נשמרו"
         elif tool_name == "get_live_price":
@@ -339,9 +418,10 @@ class InvestmentAgent:
             macd  = "חיובי" if parsed.get("macd_histogram", 0) > 0 else "שלילי"
             summary = f"RSI={rsi:.1f}, מגמה={trend}, MACD={macd}" if isinstance(rsi, float) else f"מגמה={trend}"
         elif tool_name == "get_investment_score":
-            score = parsed.get("investment_score", "?")
-            ret   = parsed.get("expected_return", 0)
-            summary = f"ציון={score}, תשואה צפויה={ret*100:.1f}%" if isinstance(ret, float) else f"ציון={score}"
+            human   = parsed.get("human", {})
+            verdict = human.get("verdict", "?")
+            ret_str = human.get("return_str", "")
+            summary = f"{verdict} | {ret_str}" if ret_str else verdict
         elif tool_name == "search_knowledge_base":
             summary = "נמצא מידע רלוונטי במאגר" if parsed.get("found") else "לא נמצא מידע קודם"
         elif tool_name == "get_asset_info":
@@ -352,8 +432,6 @@ class InvestmentAgent:
 
         return {"icon": icon, "label": label, "summary": summary, "tool": tool_name, "data": parsed}
 
-    # ── Public API ─────────────────────────────────────────────────────────────
-
     def run(self, user_query: str, user_profile: dict) -> tuple[str, list]:
         """
         Runs the agentic loop. Returns:
@@ -361,21 +439,24 @@ class InvestmentAgent:
           - tool_log (list[dict]): each tool call, for UI display
         """
         risk_tolerance  = str(user_profile.get("risk_tolerance", "medium")).lower()
-        duration_months = int(float(str(user_profile.get("duration_months", 6))))
+        duration_months = max(1, int(float(str(user_profile.get("duration_months", 6)))))
         budget          = float(user_profile.get("budget", 0))
+        user_name       = str(user_profile.get("user_name", "")).strip()
 
+        name_line = f"שם המשתמש: {user_name}. בשיחה הראשונה ברך אותו בשמו בחמימות.\n" if user_name else ""
         system_msg = (
             f"{SYSTEM_PROMPT}\n\n"
-            f"פרופיל משתמש: תקציב=${budget:,.0f} | סיכון={risk_tolerance} | אופק={duration_months} חודשים"
+            f"{name_line}"
+            f"פרופיל משקיע: תקציב=${budget:,.0f} | סיכון={risk_tolerance} | אופק={duration_months} חודשים"
         )
 
         messages: list[dict] = [
-            {"role": "system",  "content": system_msg},
-            {"role": "user",    "content": user_query},
+            {"role": "system", "content": system_msg},
+            {"role": "user",   "content": user_query},
         ]
         tool_log: list[dict] = []
 
-        # Agentic loop ─ runs until finish_reason == "stop"
+        # Agentic loop — runs until finish_reason == "stop"
         while True:
             response = self.client.chat.completions.create(
                 model=GROQ_MODEL,
@@ -389,7 +470,6 @@ class InvestmentAgent:
             if choice.finish_reason == "tool_calls":
                 tc_list = choice.message.tool_calls
 
-                # Append assistant message with its tool_calls to history
                 messages.append({
                     "role": "assistant",
                     "content": choice.message.content or "",

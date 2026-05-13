@@ -10,12 +10,13 @@ Tables:
   recommendation_logs — every AI recommendation with price + success tracking
 """
 
+import hashlib
 import logging
 import os
 from datetime import datetime
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, Integer, String, Text, create_engine,
+    Boolean, Column, DateTime, Float, Integer, String, Text, create_engine, text,
 )
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
@@ -46,6 +47,7 @@ class User(Base):
 
     id              = Column(Integer, primary_key=True, autoincrement=True)
     name            = Column(String(100), nullable=False, default="Guest")
+    password_hash   = Column(String(64),  nullable=True)   # nullable so old rows aren't broken
     budget          = Column(Float,   nullable=False, default=10_000.0)
     risk_tolerance  = Column(String(20), nullable=False, default="medium")
     duration_months = Column(Integer, nullable=False, default=12)
@@ -76,13 +78,91 @@ class RecommendationLog(Base):
 
 
 # ── DB lifecycle ──────────────────────────────────────────────────────────────
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+
 def init_db() -> None:
     """Create all tables if they don't exist. Safe to call on every startup."""
     try:
         Base.metadata.create_all(bind=engine)
+        # Idempotent migration: add password_hash column if an older DB exists
+        with engine.connect() as conn:
+            try:
+                conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(64)"))
+                conn.commit()
+            except Exception:
+                pass  # Column already exists — that's fine
         logger.info("Database initialised (tables created / verified).")
     except Exception as exc:
         logger.error(f"DB init failed: {exc}")
+
+
+# ── Auth helpers ──────────────────────────────────────────────────────────────
+def create_user(
+    name: str,
+    password: str,
+    budget: float = 10_000.0,
+    risk_tolerance: str = "medium",
+    duration_months: int = 12,
+) -> int:
+    """
+    Creates a new user account. Raises ValueError if the name is already taken.
+    Returns the new user ID.
+    """
+    name = name.strip()
+    if not name:
+        raise ValueError("שם משתמש לא יכול להיות ריק")
+    with SessionLocal() as session:
+        if session.query(User).filter_by(name=name).first():
+            raise ValueError(f"שם המשתמש '{name}' כבר תפוס — נסה שם אחר")
+        user = User(
+            name=name,
+            password_hash=_hash_password(password),
+            budget=budget,
+            risk_tolerance=risk_tolerance,
+            duration_months=duration_months,
+        )
+        session.add(user)
+        session.commit()
+        session.refresh(user)
+        logger.info(f"New user created: id={user.id} name={name}")
+        return user.id
+
+
+def authenticate_user(name: str, password: str) -> dict | None:
+    """
+    Verifies credentials. Returns a profile dict on success, None on failure.
+    The dict is detached from the session and safe to store in st.session_state.
+    """
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(name=name.strip()).first()
+        if user and user.password_hash == _hash_password(password):
+            return {
+                "id":               user.id,
+                "name":             user.name,
+                "budget":           user.budget,
+                "risk_tolerance":   user.risk_tolerance,
+                "duration_months":  user.duration_months,
+            }
+    return None
+
+
+def update_user_profile(
+    user_id: int,
+    budget: float,
+    risk_tolerance: str,
+    duration_months: int,
+) -> None:
+    """Persists sidebar profile changes back to the DB."""
+    with SessionLocal() as session:
+        user = session.query(User).filter_by(id=user_id).first()
+        if user:
+            user.budget          = budget
+            user.risk_tolerance  = risk_tolerance
+            user.duration_months = duration_months
+            user.updated_at      = datetime.utcnow()
+            session.commit()
 
 
 # ── CRUD helpers ──────────────────────────────────────────────────────────────

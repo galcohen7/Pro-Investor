@@ -1,7 +1,7 @@
 """
 Pro-Investor — Streamlit UI
-Dark financial theme, full RTL Hebrew interface.
-All user-facing text is in Hebrew; code/comments in English.
+Dark financial theme, full RTL Hebrew interface, user authentication.
+Code/comments in English; all UI text in Hebrew.
 """
 
 import json
@@ -18,9 +18,8 @@ sys.path.append(os.path.dirname(__file__))
 # ── BackendClient: tries TCP server, falls back to direct calls ────────────────
 class BackendClient:
     """
-    Thin client that routes requests to the async TCP server (server.py) when
-    reachable, and silently falls back to direct local function calls otherwise.
-    The UI stays identical in both modes.
+    Routes requests to the async TCP server (server.py) when reachable,
+    and silently falls back to direct local calls otherwise.
     """
     def __init__(self, host: str = "127.0.0.1", port: int = 8765, timeout: float = 0.5):
         self.host    = host
@@ -43,12 +42,17 @@ class BackendClient:
         except Exception:
             return None
 
+    def ping(self) -> bool:
+        result = self._send({"action": "ping"})
+        return result is not None
+
     def score(self, ticker: str, risk: str, months: int) -> dict | None:
         return self._send({"action": "score", "ticker": ticker, "risk": risk, "months": months})
 
     def price(self, ticker: str) -> float | None:
         result = self._send({"action": "price", "ticker": ticker})
         return result.get("price") if result else None
+
 
 # ── Page config (must be first Streamlit call) ─────────────────────────────────
 st.set_page_config(
@@ -72,29 +76,52 @@ else:
 from agent import InvestmentAgent
 from data_engine import get_historical_data, get_multiple_prices
 from scoring_engine import score_ticker
-from database import init_db, get_or_create_user, save_recommendation, get_recent_recommendations, get_stats
+from database import (
+    init_db, authenticate_user, create_user, update_user_profile,
+    save_recommendation, get_recent_recommendations, get_stats,
+)
 
-# Ensure DB tables exist (safe to call on every run)
 try:
     init_db()
 except Exception:
     pass
 
-# ── Dark Financial Theme CSS ───────────────────────────────────────────────────
+# ── Full Dark Theme + RTL CSS ──────────────────────────────────────────────────
 st.markdown("""
 <style>
-/* ===== Base: force dark background ===== */
+/* ===== Base ===== */
 .stApp, .stApp > div {
     background-color: #0a0e1a !important;
     color: #e2e8f0 !important;
 }
 
-/* ===== RTL for all text ===== */
-.stApp { direction: rtl; }
+/* ===== RTL — every text container ===== */
+.stApp,
 .stMarkdown, .stMarkdown p, .stMarkdown li,
-.stMarkdown h1, .stMarkdown h2, .stMarkdown h3,
+.stMarkdown h1, .stMarkdown h2, .stMarkdown h3, .stMarkdown h4,
 label, .stSelectbox label, .stSlider label,
-.stNumberInput label, .stTextInput label {
+.stNumberInput label, .stTextInput label,
+.stPasswordInput label,
+[data-testid="stWidgetLabel"],
+[data-testid="stText"],
+p, li, span {
+    direction: rtl !important;
+    text-align: right !important;
+}
+
+/* ===== Alert / Info / Success / Error / Warning — forced RTL ===== */
+.stAlert,
+[data-testid="stAlert"],
+[data-baseweb="notification"],
+div[class*="alert"], div[class*="Alert"],
+div[class*="success"], div[class*="error"],
+div[class*="warning"], div[class*="info"] {
+    direction: rtl !important;
+    text-align: right !important;
+    border-radius: 12px !important;
+}
+/* Inner text nodes inside alerts */
+.stAlert > div, .stAlert p, .stAlert span {
     direction: rtl !important;
     text-align: right !important;
 }
@@ -146,14 +173,16 @@ section[data-testid="stSidebar"] * {
 }
 
 /* ===== Inputs ===== */
-.stTextInput input, .stNumberInput input, .stChatInput textarea {
+.stTextInput input, .stNumberInput input,
+.stChatInput textarea, .stPasswordInput input {
     background: #111827 !important;
     color: #e2e8f0 !important;
     border: 1px solid #1e293b !important;
     border-radius: 10px !important;
     direction: rtl;
 }
-.stTextInput input:focus, .stNumberInput input:focus {
+.stTextInput input:focus, .stNumberInput input:focus,
+.stPasswordInput input:focus {
     border-color: #10b981 !important;
     box-shadow: 0 0 0 2px rgba(16,185,129,0.2) !important;
 }
@@ -164,24 +193,38 @@ section[data-testid="stSidebar"] * {
     color: #e2e8f0 !important;
 }
 
+/* ===== Forms (login / signup) ===== */
+[data-testid="stForm"] {
+    background: #111827 !important;
+    border: 1px solid #1e293b !important;
+    border-radius: 14px !important;
+    padding: 24px !important;
+}
+
 /* ===== Chat messages ===== */
 [data-testid="stChatMessage"] {
     border-radius: 16px !important;
     padding: 4px 8px !important;
     margin-bottom: 6px !important;
     border: 1px solid #1e293b !important;
+    direction: rtl !important;
 }
-/* User message — right-aligned blue bubble */
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-user"]) {
     background: linear-gradient(135deg, #1e3a5f33, #2d4a7a22) !important;
     border-color: #2d4a7a !important;
     margin-left: 12% !important;
 }
-/* Assistant message — left-aligned emerald bubble */
 [data-testid="stChatMessage"]:has([data-testid="chatAvatarIcon-assistant"]) {
     background: linear-gradient(135deg, #06221544, #0a2e1e33) !important;
     border-color: rgba(16, 185, 129, 0.25) !important;
     margin-right: 12% !important;
+}
+/* Force RTL inside chat bubbles */
+[data-testid="stChatMessage"] p,
+[data-testid="stChatMessage"] span,
+[data-testid="stChatMessage"] div {
+    direction: rtl !important;
+    text-align: right !important;
 }
 
 /* ===== Metrics ===== */
@@ -206,6 +249,9 @@ section[data-testid="stSidebar"] * {
     border: 1px solid #1e293b !important;
     border-radius: 0 0 10px 10px !important;
 }
+.streamlit-expanderHeader *, .streamlit-expanderContent * {
+    direction: rtl !important;
+}
 
 /* ===== DataTable ===== */
 [data-testid="stDataFrame"] {
@@ -214,10 +260,11 @@ section[data-testid="stSidebar"] * {
     border: 1px solid #1e293b !important;
 }
 
-/* ===== Divider ===== */
-hr { border-color: #1e293b !important; }
+/* ===== Status widget ===== */
+[data-testid="stStatusWidget"] { direction: rtl !important; }
 
-/* ===== Spinner ===== */
+/* ===== Divider / Spinner ===== */
+hr { border-color: #1e293b !important; }
 .stSpinner > div { border-top-color: #10b981 !important; }
 
 /* ===== Slider ===== */
@@ -225,41 +272,163 @@ hr { border-color: #1e293b !important; }
     color: #10b981 !important;
 }
 
-/* ===== Success / Error boxes ===== */
-.stAlert { border-radius: 12px !important; direction: rtl; }
+/* ===== Login card ===== */
+.login-card {
+    max-width: 440px;
+    margin: 60px auto;
+    background: #111827;
+    border: 1px solid #1e293b;
+    border-radius: 20px;
+    padding: 40px 36px;
+}
 </style>
 """, unsafe_allow_html=True)
 
-# ── Session state ──────────────────────────────────────────────────────────────
-if "agent"        not in st.session_state:
+# ── Session state defaults ─────────────────────────────────────────────────────
+for _k, _v in {
+    "logged_in":    False,
+    "user_id":      None,
+    "user_name":    "",
+    "user_profile": {},
+    "agent":        None,
+    "chat_history": [],
+    "backend":      BackendClient(),
+}.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# LOGIN / SIGNUP SCREEN — shown before the main app
+# ══════════════════════════════════════════════════════════════════════════════
+def _render_login_screen() -> None:
+    st.markdown(
+        "<h1 style='text-align:center; color:#10b981; margin-bottom:4px;'>📈 Pro-Investor</h1>"
+        "<p style='text-align:center; color:#94a3b8; margin-bottom:32px;'>"
+        "יועץ ההשקעות החכם שלך — מחפש, מנתח ומדרג בזמן אמת</p>",
+        unsafe_allow_html=True,
+    )
+
+    _, col, _ = st.columns([1, 2, 1])
+    with col:
+        tab_login, tab_signup = st.tabs(["🔐 התחברות", "📝 הרשמה"])
+
+        # ── Login ──────────────────────────────────────────────────────────────
+        with tab_login:
+            with st.form("login_form"):
+                name     = st.text_input("👤 שם משתמש")
+                password = st.text_input("🔑 סיסמה", type="password")
+                submitted = st.form_submit_button("התחבר")
+
+            if submitted:
+                if not name or not password:
+                    st.error("יש למלא שם משתמש וסיסמה")
+                else:
+                    profile = authenticate_user(name, password)
+                    if profile:
+                        st.session_state.logged_in    = True
+                        st.session_state.user_id      = profile["id"]
+                        st.session_state.user_name    = profile["name"]
+                        st.session_state.user_profile = profile
+                        st.session_state.agent        = InvestmentAgent()
+                        st.rerun()
+                    else:
+                        st.error("שם משתמש או סיסמה שגויים — נסה שוב")
+
+        # ── Signup ─────────────────────────────────────────────────────────────
+        with tab_signup:
+            with st.form("signup_form"):
+                new_name     = st.text_input("👤 שם משתמש (ייחודי)")
+                new_pass     = st.text_input("🔑 סיסמה", type="password")
+                new_pass2    = st.text_input("🔑 אימות סיסמה", type="password")
+                new_budget   = st.number_input("💰 תקציב ($)", min_value=100, max_value=10_000_000, value=10_000, step=500)
+                risk_opts    = {"נמוך 🟢": "low", "בינוני 🟡": "medium", "גבוה 🔴": "high"}
+                new_risk_lbl = st.selectbox("⚖️ רמת סיכון", list(risk_opts.keys()), index=1)
+                new_duration = st.slider("📅 אופק השקעה (חודשים)", 1, 60, 12)
+                reg_submitted = st.form_submit_button("הרשמה")
+
+            if reg_submitted:
+                if not new_name or not new_pass:
+                    st.error("יש למלא שם משתמש וסיסמה")
+                elif new_pass != new_pass2:
+                    st.error("הסיסמאות אינן תואמות")
+                else:
+                    try:
+                        uid = create_user(
+                            name=new_name,
+                            password=new_pass,
+                            budget=float(new_budget),
+                            risk_tolerance=risk_opts[new_risk_lbl],
+                            duration_months=int(new_duration),
+                        )
+                        st.success(f"✅ ברוך הבא, {new_name}! החשבון נוצר — עבור ללשונית 'התחברות'")
+                    except ValueError as exc:
+                        st.error(str(exc))
+
+
+if not st.session_state.logged_in:
+    _render_login_screen()
+    st.stop()
+
+# ── Lazy-init agent (first login or page reload) ───────────────────────────────
+if st.session_state.agent is None:
     st.session_state.agent = InvestmentAgent()
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "backend"      not in st.session_state:
-    st.session_state.backend = BackendClient()
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## 📈 Pro-Investor")
-    st.markdown("*יועץ השקעות AI אוטונומי*")
+    # User greeting + logout
+    st.markdown(
+        f"<div style='text-align:right; direction:rtl;'>"
+        f"<span style='font-size:1.1rem; font-weight:700; color:#10b981;'>"
+        f"שלום, {st.session_state.user_name}! 👋</span></div>",
+        unsafe_allow_html=True,
+    )
+    if st.button("🚪 התנתק", key="logout_btn"):
+        for k in ["logged_in", "user_id", "user_name", "user_profile", "agent", "chat_history"]:
+            st.session_state[k] = None if k in ("user_id", "agent") else (False if k == "logged_in" else "" if k in ("user_name",) else {} if k == "user_profile" else [])
+        st.rerun()
+
     st.divider()
 
+    # Server health indicator
+    _server_ok = st.session_state.backend.ping()
+    if _server_ok:
+        st.success("🟢 שרת TCP מחובר")
+    else:
+        st.warning("🟡 מצב עצמאי (שרת לא פעיל)")
+
+    st.divider()
     st.markdown("### ⚙️ פרופיל המשקיע")
 
+    _prof = st.session_state.user_profile
     budget = st.number_input(
         "💰 תקציב ($)",
-        min_value=100, max_value=10_000_000, value=10_000, step=500, format="%d",
+        min_value=100, max_value=10_000_000,
+        value=int(_prof.get("budget", 10_000)),
+        step=500, format="%d",
     )
 
     risk_map   = {"נמוך 🟢": "low", "בינוני 🟡": "medium", "גבוה 🔴": "high"}
-    risk_label = st.selectbox("⚖️ רמת סיכון", list(risk_map.keys()), index=1)
+    _saved_risk = _prof.get("risk_tolerance", "medium")
+    _risk_idx  = {"low": 0, "medium": 1, "high": 2}.get(_saved_risk, 1)
+    risk_label = st.selectbox("⚖️ רמת סיכון", list(risk_map.keys()), index=_risk_idx)
     risk       = risk_map[risk_label]
 
-    duration = st.slider("📅 אופק (חודשים)", 1, 60, 12)
+    duration = st.slider("📅 אופק (חודשים)", 1, 60, int(_prof.get("duration_months", 12)))
+
+    if st.button("💾 שמור פרופיל", key="save_profile"):
+        try:
+            update_user_profile(st.session_state.user_id, float(budget), risk, int(duration))
+            st.session_state.user_profile.update({
+                "budget": float(budget), "risk_tolerance": risk, "duration_months": int(duration)
+            })
+            st.success("✅ הפרופיל עודכן")
+        except Exception as exc:
+            st.error(f"שגיאה: {exc}")
 
     st.divider()
 
-    # ── Live mini-ticker bar ───────────────────────────────────────────────────
+    # Live mini-ticker bar
     st.markdown("### 📡 שוק בזמן אמת")
     WATCHLIST = ["SPY", "AAPL", "NVDA", "BTC-USD"]
     with st.spinner(""):
@@ -272,9 +441,9 @@ with st.sidebar:
             st.caption("נתוני שוק זמינים בצ'אט")
 
     st.divider()
-    st.caption(f"🤖 LLM: LLaMA-3.3-70b via Groq")
-    st.caption(f"🗄️ RAG: ChromaDB + Sentence-Transformers")
-    st.caption(f"🔍 Web: DuckDuckGo Search")
+    st.caption("🤖 LLM: LLaMA-3.3-70b via Groq")
+    st.caption("🗄️ RAG: ChromaDB + Sentence-Transformers")
+    st.caption("🔍 Web: DuckDuckGo Search")
 
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.markdown(
@@ -298,7 +467,7 @@ tab_chat, tab_analyze, tab_chart, tab_history = st.tabs([
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_chat:
 
-    # Render chat history
+    # Render existing chat history
     for msg in st.session_state.chat_history:
         if msg["role"] == "user":
             with st.chat_message("user"):
@@ -306,27 +475,27 @@ with tab_chat:
         else:
             with st.chat_message("assistant", avatar="📈"):
                 st.markdown(msg["content"])
-                # Show tool log as collapsible research trail
                 log = msg.get("tool_log", [])
                 if log:
                     with st.expander(f"🔍 תהליך מחקר הסוכן ({len(log)} צעדים)", expanded=False):
                         for step in log:
-                            st.markdown(
-                                f"{step['icon']} **{step['label']}** — {step['summary']}"
-                            )
+                            st.markdown(f"{step['icon']} **{step['label']}** — {step['summary']}")
 
-    # Chat input
     user_input = st.chat_input(
         "שאל את הסוכן... (לדוגמה: 'נתח NVDA עבור 12 חודשים' או 'מה המגמה ב-BTC?')"
     )
 
     if user_input:
-        # Display user bubble immediately
         with st.chat_message("user"):
             st.markdown(user_input)
         st.session_state.chat_history.append({"role": "user", "content": user_input})
 
-        profile = {"budget": budget, "risk_tolerance": risk, "duration_months": duration}
+        profile = {
+            "budget":          budget,
+            "risk_tolerance":  risk,
+            "duration_months": duration,
+            "user_name":       st.session_state.user_name,
+        }
 
         with st.chat_message("assistant", avatar="📈"):
             status = st.status("🔍 הסוכן חוקר...", expanded=True)
@@ -346,22 +515,14 @@ with tab_chat:
                 if tool_log:
                     with st.expander(f"🔍 תהליך מחקר הסוכן ({len(tool_log)} צעדים)", expanded=False):
                         for step in tool_log:
-                            st.markdown(
-                                f"{step['icon']} **{step['label']}** — {step['summary']}"
-                            )
+                            st.markdown(f"{step['icon']} **{step['label']}** — {step['summary']}")
 
                 st.session_state.chat_history.append(
                     {"role": "assistant", "content": answer, "tool_log": tool_log}
                 )
 
-                # Save recommendation to DB (best-effort — never blocks the UI)
+                # Save scored recommendation to DB (best-effort — never blocks the UI)
                 try:
-                    profile = {"budget": budget, "risk_tolerance": risk, "duration_months": duration}
-                    user_id = get_or_create_user(
-                        budget=float(budget),
-                        risk_tolerance=risk,
-                        duration_months=int(duration),
-                    )
                     for step in tool_log:
                         if step.get("tool") == "get_investment_score" and step.get("data"):
                             d = step["data"]
@@ -371,7 +532,7 @@ with tab_chat:
                                 price=float(d.get("current_price", 0)),
                                 score_data=d,
                                 ai_response=answer,
-                                user_id=user_id,
+                                user_id=st.session_state.user_id,
                             )
                             break
                 except Exception:
@@ -379,7 +540,7 @@ with tab_chat:
 
             except Exception as exc:
                 status.update(label="❌ שגיאה", state="error")
-                err = f"שגיאה: {exc}"
+                err = f"אני מצטער, נתקלתי בשגיאה טכנית: {exc}"
                 st.error(err)
                 st.session_state.chat_history.append(
                     {"role": "assistant", "content": err, "tool_log": []}
@@ -496,7 +657,6 @@ with tab_chart:
                     name=chart_sym.upper(),
                 ))
 
-                # 20-day MA overlay
                 ma20 = data["Close"].rolling(20).mean()
                 fig.add_trace(go.Scatter(
                     x=data.index, y=ma20,
@@ -531,7 +691,7 @@ with tab_chart:
                 st.error(f"❌ שגיאה: {exc}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# TAB 4 — Recommendation History
+# TAB 4 — Recommendation History (per logged-in user)
 # ══════════════════════════════════════════════════════════════════════════════
 with tab_history:
     st.markdown(
@@ -578,6 +738,6 @@ st.divider()
 st.markdown(
     "<p style='text-align:center; color:#475569; font-size:0.8rem;'>"
     "⚠️ המידע הוא לצורכי מידע בלבד ואינו ייעוץ פיננסי מוסמך. "
-    "השקעות כרוכות בסיכון אובדן הון. | Pro-Investor AI © 2025</p>",
+    "השקעות כרוכות בסיכון אובדן הון. | Pro-Investor AI © 2026</p>",
     unsafe_allow_html=True,
 )
